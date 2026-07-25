@@ -13,8 +13,12 @@ MODEL=${3:?}
 PROMPT=${4:?}
 N=${5:-96}
 
+# The unified `llama` binary dispatches on a subcommand; older builds expose `llama-cli`, which
+# takes the flags directly. SUBCMD covers both.
+SUBCMD=${SUBCMD-completion}
+
 run() {
-    "$1" -m "$MODEL" -f "$PROMPT" -n "$N" --temp 0 --seed 0 -no-cnv --no-warmup \
+    "$1" ${SUBCMD:+$SUBCMD} -m "$MODEL" -f "$PROMPT" -n "$N" --temp 0 --seed 0 -no-cnv --no-warmup \
         -t "$(nproc)" 2>/dev/null
 }
 
@@ -22,6 +26,19 @@ echo "generating on stock..."
 run "$STOCK_BIN" > /tmp/gen-stock.txt
 echo "generating on fastpath..."
 run "$PATCHED_BIN" > /tmp/gen-patched.txt
+
+# Two empty files are byte-identical, which would be a vacuous pass. Refuse to report anything
+# unless both runs actually generated text.
+for f in /tmp/gen-stock.txt /tmp/gen-patched.txt; do
+    if [ ! -s "$f" ]; then
+        echo
+        echo "## Generated output"
+        echo
+        echo "**Inconclusive.** \`$(basename "$f")\` is empty - the binary produced no output, so"
+        echo "there is nothing to compare. Check the invocation before reading anything into this."
+        exit 0
+    fi
+done
 
 echo
 echo "## Generated output, greedy decode, same seed"

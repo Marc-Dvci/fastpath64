@@ -21,9 +21,11 @@ RE_EVAL = re.compile(r"\beval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*(?:runs|tok
 RE_TOTAL = re.compile(r"total time\s*=\s*([\d.]+)\s*ms")
 
 
-def run_once(binary, model, prompt_file, n_predict, threads):
-    cmd = [
-        binary, "-m", model, "-f", prompt_file,
+def run_once(binary, model, prompt_file, n_predict, threads, subcommand="completion"):
+    # the unified `llama` binary dispatches on a subcommand; older `llama-cli` builds take the
+    # flags directly, so an empty subcommand skips it
+    cmd = [binary] + ([subcommand] if subcommand else []) + [
+        "-m", model, "-f", prompt_file,
         "-n", str(n_predict), "-t", str(threads),
         "--temp", "0", "--seed", "0", "-no-cnv", "--no-warmup",
     ]
@@ -57,12 +59,15 @@ def main():
     ap.add_argument("--n-predict", type=int, default=96)
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--subcommand", default="completion",
+                    help="subcommand for the unified llama binary; pass '' for llama-cli")
     ap.add_argument("--json-out")
     args = ap.parse_args()
 
     results = {}
     for label, binary in (("stock", args.stock), ("fastpath", args.patched)):
-        runs = [run_once(binary, args.model, args.prompt, args.n_predict, args.threads)
+        runs = [run_once(binary, args.model, args.prompt, args.n_predict, args.threads,
+                         args.subcommand)
                 for _ in range(args.repeats)]
         results[label] = {
             k: statistics.median(r[k] for r in runs)

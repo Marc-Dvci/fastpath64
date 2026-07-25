@@ -137,5 +137,6 @@ retrieved context go in; a few dozen tokens of JSON come out. Dividing out the m
 rates, a 2048-token agent prompt in IQ4_XS costs about **115 s** of prefill on stock and **72 s**
 patched on this 4 vCPU instance — derived from the throughput above, not separately timed.
 
-The end-to-end agent-turn measurement (`bench/agentbench.py`) landed after this run and is wired
-into the workflow for the next one.
+No end-to-end agent-turn figure is reported. `bench/agentbench.py` exists and is wired into the
+workflow, but its first run invoked the unified `llama` binary without a subcommand and produced
+nothing; the invocation is fixed and the measurement is simply absent rather than estimated.
