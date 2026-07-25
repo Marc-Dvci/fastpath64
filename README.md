@@ -38,15 +38,22 @@ file.** The format the MoE ecosystem standardised on went from the slowest 4-bit
 the fastest. It ends up ahead because IQ4_XS carries no min/`dmin` term: one 6-bit scale covers each
 32-element sub-block, so the kernel does strictly less work per byte than Q4_K's.
 
+The same A/B on **gemma-4-12b-it-IQ4_XS**, four times larger and benchmarked alone, gives
+**2.00x** at `pp512` and 1.61x at `pp2048` — so the gain is a property of the kernel, not of one
+model size.
+
 The Q4_K control lands at **1.00x to two decimals on all four cases**. Q4_K is a format this work
 does not touch, so if the patched build were faster for any incidental reason — compiler luck, a
 warmer cache, a quieter neighbour — the control would have moved too. It did not.
 
-![Prefill throughput on Neoverse N2](figures/fig1_speedup.svg)
+![Prefill throughput on Neoverse N2](figures/fig1_speedup.png)
 
-→ **[results/p1-results.md](results/p1-results.md)** — full tables, MoE numbers, the decode
-regression, and the correctness gate ·
-[the run](https://github.com/Marc-Dvci/fastpath64/actions/runs/30156929580)
+→ **[results/p1-results.md](results/p1-results.md)** — full tables, MoE and 12B numbers, the decode
+regression, the correctness gate · [the run](https://github.com/Marc-Dvci/fastpath64/actions/runs/30156929580)
+
+Two findings worth their own notes: [a file named IQ4_XS that contained
+none](results/quant-provenance.md), now a CI gate; and [an optimisation that measured
+slower](results/rejected-optimisation.md) and was reverted.
 
 ## Status
 
@@ -58,7 +65,7 @@ regression, and the correctness gate ·
 | P1c | `sdot` GEMM for pre-I8MM cores | **done** — [patch](patches/0003-iq4_xs-arm-dotprod-gemm.patch) |
 | — | Upstream-ready branch | [pushed](https://github.com/Marc-Dvci/llama.cpp/tree/iq4-xs-arm-repack) + [description](docs/upstream-pr.md); no PR opened |
 | — | Vectorised scale decode | tried, **slower**, reverted — [why](results/rejected-optimisation.md) |
-| P2 | Larger model: gemma-4-12b | **done — 2.00x at pp512** |
+| P2 | Larger model: gemma-4-12b-it-IQ4_XS | **done** — 2.00x at `pp512`, 1.61x at `pp2048` |
 
 Three kernels, covering every Arm server CPU in service:
 
@@ -103,7 +110,7 @@ run-to-run spread. You cannot lose what you never had; that toggle is the differ
 observing a gap and demonstrating its mechanism. Enabling KleidiAI changed nothing for either,
 because it accepts only Q4_0 and Q8_0.
 
-![What Arm's fast path was worth](figures/fig2_toggle.svg)
+![What Arm's fast path was worth](figures/fig2_toggle.png)
 
 → **[docs/the-gap.md](docs/the-gap.md)** (source evidence, file:line) ·
 **[results/phase0.md](results/phase0.md)** (full tables) ·

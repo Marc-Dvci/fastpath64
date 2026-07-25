@@ -11,3 +11,8 @@ __pycache__/
 results/**/*.log
 results/**/test_repack_equiv
 results/raw-ab2/
+
+# not part of the deliverable: submission drafts and the video project live outside the repo
+demo-video/
+docs/devpost-*.md
+docs/video-script.md
