@@ -25,15 +25,32 @@ FastPath64 closes it. Same GGUF, bit-identical output, on the silicon Arm actual
 
 → **[docs/the-gap.md](docs/the-gap.md)** — the full source-level evidence, with file:line citations.
 
-## Status
+## Measured on Neoverse N2
 
-Phase 0: quantifying the gap on real Neoverse N2 silicon. Nothing here is measured yet — this
-README will carry no performance number that isn't linked to the CI run that produced it.
+Three builds of the same pinned upstream commit, same runner, same GGUF files — differing only in
+whether Arm's fast path is compiled in. Llama-3.2-3B, prefill `pp512`, tokens/s:
+
+| build | Q4_K_M | IQ4_XS |
+|---|---:|---:|
+| stock (repack ON) | **42.78** | **25.08** |
+| repack OFF | 27.65 | 24.94 |
+| KleidiAI ON | 42.78 | 25.01 |
+| **what Arm's fast path is worth** | **1.55x** | **1.01x** |
+
+Turning the fast path off costs Q4_K 35% of its prefill throughput. It costs IQ4_XS **0.6%** —
+less than the run-to-run spread. You cannot lose what you never had. Enabling KleidiAI changes
+nothing for either, because it only accepts Q4_0 and Q8_0.
+
+Meanwhile the runner's own `lscpu` reports `... sve2 ... svei8mm i8mm bf16`. **The I8MM unit is
+right there, and IQ4_XS never issues a single `smmla`.**
+
+→ **[results/phase0.md](results/phase0.md)** — full tables incl. MoE, decode, x86, and the
+projected ceiling · [the run that produced them](https://github.com/Marc-Dvci/fastpath64/actions/runs/30148951999)
 
 | # | Work | Status |
 |---|---|---|
-| P0 | Measure the gap on Neoverse N2 | harness written, awaiting first run |
-| P1 | `iq4_xs_8x8_q8_K` interleaved `smmla` GEMM + `8x4` `sdot` GEMV | not started |
+| P0 | Measure the gap on Neoverse N2 | **done — gap confirmed, mechanism proven** |
+| P1 | `iq4_xs_8x8_q8_K` interleaved `smmla` GEMM + `8x4` `sdot` GEMV | next |
 | P2 | Expert-row grouping so MoE `MUL_MAT_ID` reaches M≥8 tiles | not started |
 | P3 | `GGML_OP_MUL_MAT_ID` support in KleidiAI | not started |
 
