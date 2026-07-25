@@ -42,6 +42,8 @@ The Q4_K control lands at **1.00x to two decimals on all four cases**. Q4_K is a
 does not touch, so if the patched build were faster for any incidental reason — compiler luck, a
 warmer cache, a quieter neighbour — the control would have moved too. It did not.
 
+![Prefill throughput on Neoverse N2](figures/fig1_speedup.svg)
+
 → **[results/p1-results.md](results/p1-results.md)** — full tables, MoE numbers, the decode
 regression, and the correctness gate ·
 [the run](https://github.com/Marc-Dvci/fastpath64/actions/runs/30156929580)
@@ -100,6 +102,8 @@ Turning the fast path off cost Q4_K 35% of its prefill. It cost IQ4_XS **0.6%** 
 run-to-run spread. You cannot lose what you never had; that toggle is the difference between
 observing a gap and demonstrating its mechanism. Enabling KleidiAI changed nothing for either,
 because it accepts only Q4_0 and Q8_0.
+
+![What Arm's fast path was worth](figures/fig2_toggle.svg)
 
 → **[docs/the-gap.md](docs/the-gap.md)** (source evidence, file:line) ·
 **[results/phase0.md](results/phase0.md)** (full tables) ·
