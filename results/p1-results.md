@@ -104,6 +104,25 @@ type=iq4_xs N=8   K=256  M=16  max_abs=0.000e+00  PASS
 M=1 exercises GEMV only, M=8/16 GEMM only, M=5/9 both plus remainder handling. These match the
 QEMU figures to the digit, which is a useful cross-check on the emulation harness itself.
 
+## The result holds at 12B
+
+The same A/B on gemma-4-12b-it-IQ4_XS, a model four times larger, run alone on its own runner so
+the download and page cache shared with nothing:
+
+| case | stock | FastPath64 | |
+|---|---:|---:|---:|
+| `pp512` | 6.59 ±0.02 | **13.16 ±0.00** | **2.00x** |
+| `pp2048` | 5.02 ±0.01 | **8.08 ±0.00** | **1.61x** |
+| `tg64` | 5.32 ±0.01 | 4.91 ±0.04 | 0.92x |
+
+The prefill figures track the 3B almost exactly (2.12x / 1.60x), so the gain is a property of the
+kernel rather than of one model size. A provenance gate ran first and confirmed the FFN tensors are
+100% IQ4_XS; see [quant-provenance.md](quant-provenance.md) for why that check now exists.
+
+Decode is worse here than on the 3B — 0.92x against 0.97x — consistent with the same cause: the
+GEMV carries per-sub-block scale decoding that the non-repacked `vec_dot` path does not, and a
+larger model runs proportionally more of it.
+
 ## What this means for an agent turn
 
 An agent turn is overwhelmingly prefill: a large system prompt, tool schemas, history and

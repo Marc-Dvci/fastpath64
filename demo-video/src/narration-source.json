@@ -1,0 +1,32 @@
+[
+  {
+    "id": "grep",
+    "file": "audio/01-grep.mp3",
+    "script": "I Q 4 X S is the format most quantized mixture-of-experts models ship in. Here is what llama dot cpp says about running them on Arm. Zero. Arm has no kernel for this format. Intel does. The same file gets a tiled integer matmul path on x86, and a scalar fallback on Arm."
+  },
+  {
+    "id": "silicon",
+    "file": "audio/02-silicon.mp3",
+    "script": "The hardware is not the problem. This is the machine every number here comes from: a Neoverse N 2, advertising i8mm, the integer matrix instruction. An I Q 4 X S model never issues a single one. And the incentive makes it worse. You pick the smallest four-bit format to fit a cost-efficient instance, and that choice is exactly what hands the throughput back."
+  },
+  {
+    "id": "toggle",
+    "file": "audio/03-toggle.mp3",
+    "script": "Before writing a kernel, prove the diagnosis. Same commit, same runner, same files. Only Arm's fast path is toggled. Disabling it costs Q 4 K thirty-five percent of its prefill. It costs I Q 4 X S zero point six percent, which is inside the run-to-run noise. You cannot lose what you never had."
+  },
+  {
+    "id": "kernel",
+    "file": "audio/04-kernel.mp3",
+    "script": "I Q 4 X S is a hybrid. It carries I Q 4 N L's sixteen-entry codebook, with K-quant style super-block scales. Arm already had smmla kernels for each half separately, so the missing kernel was the intersection of two that already shipped, which is why it belonged to neither effort. A sixteen-byte weight load is one column pair. A sixteen-byte activation load is one row pair. smmla returns the two by two tile with no shuffling in the inner loop. Three kernels ship: smmla for Graviton and Cobalt, s-dot for Graviton 2 and Ampere Altra, and a dot-product GEMV, so batch-one decode is never traded away."
+  },
+  {
+    "id": "result",
+    "file": "audio/05-result.mp3",
+    "script": "Prefill runs two point one two times faster, on the same G G U F file, with both builds compiled in the same job on the same physical runner. I Q 4 X S used to run at zero point five eight times the speed of Q 4 K. It now runs at one point two four times, while still being the smaller file. And the row that matters most is the control. Q 4 K, untouched by this work, holds at one point zero zero."
+  },
+  {
+    "id": "reproduce",
+    "file": "audio/06-reproduce.mp3",
+    "script": "Every number re-runs from a button on a public repository, on free Arm runners. Correctness runs on an x86 laptop under emulation, covering the dot-product path no free runner exposes. And timings are gated behind an equivalence check against the unmodified path. If it fails, the workflow refuses to report throughput."
+  }
+]
