@@ -1,0 +1,20 @@
+type=iq4_xs N=64 K=512 M=1
+repack buffer type: CPU_REPACK
+took repack fast path: yes
+max_abs=3.815e-06  max_rel=5.673e-07  rmse=7.976e-07
+PASS
+type=iq4_xs N=64 K=512 M=5
+repack buffer type: CPU_REPACK
+took repack fast path: yes
+max_abs=3.815e-06  max_rel=2.044e-05  rmse=7.652e-07
+PASS
+type=iq4_xs N=128 K=1024 M=9
+repack buffer type: CPU_REPACK
+took repack fast path: yes
+max_abs=7.629e-06  max_rel=1.927e-05  rmse=1.748e-06
+PASS
+type=iq4_xs N=8 K=256 M=16
+repack buffer type: CPU_REPACK
+took repack fast path: yes
+max_abs=0.000e+00  max_rel=0.000e+00  rmse=0.000e+00
+PASS
