@@ -68,12 +68,20 @@ jobs:
       - name: Build both variants
         run: |
           for v in stock patched; do
+            # SERVER=ON because the llama-app executable links llama-server-impl
             cmake -S "src-$v" -B "src-$v/build" -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
-              -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+              -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON \
               > "out/cmake-$v.log" 2>&1
-            cmake --build "src-$v/build" --target llama-bench llama-app -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
-            echo "built $v"
+            # llama-bench is the critical path - the A/B numbers depend on it
+            cmake --build "src-$v/build" --target llama-bench -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
+            # llama-app only feeds the optional agent-turn measurement, so it must never be able
+            # to sink the run
+            if cmake --build "src-$v/build" --target llama-app -j"$(nproc)" >> "out/cmake-$v.log" 2>&1; then
+              echo "built $v (with llama-app)"
+            else
+              echo "::warning::llama-app failed to build for $v - agent-turn steps skipped"
+            fi
           done
 
       - name: Correctness gate on real silicon
@@ -135,9 +143,12 @@ jobs:
           # the IQ4_XS model is the one this work touches
           MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
           if [ -z "$MODEL" ]; then echo "no iq4_xs model available"; exit 0; fi
+          for b in src-stock/build/bin/llama src-patched/build/bin/llama; do
+            [ -x "$b" ] || { echo "$b missing - skipping agent turn"; exit 0; }
+          done
           python3 bench/agentbench.py \
-            --stock   src-stock/build/bin/llama-app \
-            --patched src-patched/build/bin/llama-app \
+            --stock   src-stock/build/bin/llama \
+            --patched src-patched/build/bin/llama \
             --model "$MODEL" --prompt out/agent_prompt.txt \
             --n-predict 96 --threads "$(nproc)" --repeats 3 \
             --json-out out/agentbench.json | tee out/agentbench.md
@@ -147,8 +158,9 @@ jobs:
         run: |
           MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
           [ -n "$MODEL" ] || exit 0
+          [ -x src-patched/build/bin/llama ] || exit 0
           bash bench/diff_generation.sh \
-            src-stock/build/bin/llama-app src-patched/build/bin/llama-app \
+            src-stock/build/bin/llama src-patched/build/bin/llama \
             "$MODEL" out/agent_prompt.txt 96 | tee out/generation-diff.md
 
       - name: Summarise A/B
