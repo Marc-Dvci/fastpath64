@@ -54,15 +54,12 @@ expert matmuls run at about **1/7th** the FLOPs-per-byte of a dense model at the
 Lower intensity means more bandwidth-bound, and a compute kernel cannot help what is waiting on
 memory.
 
-That reframes the expectation for bigger models rather than raising it. gemma-4-26B-A4B is 4B
-active of 26B — a sparsity ratio of 6.5, essentially OLMoE's 7. On the intensity argument alone it
-should gain about as much, not more. Pulling the other way, its expert matrices are far larger,
-which amortises GEMM setup better.
+That reframes the expectation for bigger sparse models rather than raising it: sparsity, not
+expert-matrix size, is what caps the gain, and a sparser model is capped harder.
 
-Two effects in opposite directions is not a prediction I can make from the armchair, so it is
-being measured: `bench-bigmoe.yml` runs gemma-4-26B-A4B IQ4_XS on the same free runner. At 12.7 GB
-it does fit in 16 GB — just. Qwen3.6-35B-A3B is 17.4 GB at IQ4_XS and genuinely does not fit, and
-no number will be claimed for it.
+An attempt to test this on a 26B MoE produced a different lesson entirely — the file named IQ4_XS
+turned out to contain none, which is now a CI gate. See
+[quant-provenance.md](quant-provenance.md).
 
 The same argument explains why *both* dense and MoE gains fall from `pp512` to `pp2048`: attention
 grows with sequence length and is untouched by this work, so the FFN's share of the total shrinks.
@@ -86,9 +83,13 @@ output to amortise it over — a quarter of what the GEMM enjoys. Note the Q4_K 
 0.99x, so part of the movement is run-level and not attributable to the kernel.
 
 Traded against 2.12x on prefill this is a good deal for any prefill-heavy workload, which is what
-agent traffic is. It is still a regression, it is not hidden, and it is being worked on — the
-scale bytes can be repacked sub-block-major as 8x8 six-bit values, an exact 48-byte fit, making
-the decode contiguous and vectorisable.
+agent traffic is. It is still a regression and it is not hidden.
+
+One fix was attempted and rejected on measurement: decoding the scales with `vld4_u8` cost ~10% of
+prefill and made decode *worse*, because the vector result was consumed as eight scalars and stalled
+on store-to-load forwarding. The attempt and its mechanism are recorded in
+[rejected-optimisation.md](rejected-optimisation.md). The correct fix keeps the scales in registers
+and is not shipped rather than shipped unmeasured.
 
 ## Correctness, on the same silicon
 

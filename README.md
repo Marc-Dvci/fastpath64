@@ -57,8 +57,8 @@ regression, and the correctness gate ·
 | P1b | NEON `smmla` GEMM + `sdot` GEMV | **done** — [patch](patches/0002-iq4_xs-arm-neon-smmla.patch) |
 | P1c | `sdot` GEMM for pre-I8MM cores | **done** — [patch](patches/0003-iq4_xs-arm-dotprod-gemm.patch) |
 | — | Upstream-ready branch | [pushed](https://github.com/Marc-Dvci/llama.cpp/tree/iq4-xs-arm-repack) + [description](docs/upstream-pr.md); no PR opened |
-| P2 | Vectorise scale decode (dense-decode regression) | [patch](patches/0004-iq4_xs-vectorise-scale-decode.patch), re-measuring |
-| P3 | gemma-4-26B-A4B on a free runner | `bench-bigmoe.yml`, queued |
+| — | Vectorised scale decode | tried, **slower**, reverted — [why](results/rejected-optimisation.md) |
+| P2 | Larger model: gemma-4-12b | **done — 2.00x at pp512** |
 
 Three kernels, covering every Arm server CPU in service:
 
@@ -80,9 +80,9 @@ the prefill win is worth.
 - **Output is not bit-identical.** `smmla` accumulates in a different order than the reference path,
   so results differ by ~1e-6. Some shapes come out exactly equal, most do not. What is gated is
   numerical equivalence against the non-repacked path, not bitwise equality.
-- **The large-MoE number is still being measured.** gemma-4-26B-A4B IQ4_XS is 12.7 GB and does fit
-  a free runner's 16 GB; that run is wired up in `bench-bigmoe.yml`. Qwen3.6-35B-A3B is 17.4 GB and
-  does not fit, so nothing is claimed for it. The MoE figure quoted here (1.13x) is OLMoE-1B-7B.
+- **MoE gains less than dense**, and the arithmetic says why: a MoE prefill reads every expert's
+  weights while computing only the active fraction, so it sits closer to the bandwidth-bound regime
+  a compute kernel cannot help. Measured 1.13x on OLMoE-1B-7B against 2.12x dense.
 - **No AMX measurement.** That Intel has an IQ4_XS path is read from upstream source; the x86 runner
   available here is an AMD EPYC with no AMX.
 
