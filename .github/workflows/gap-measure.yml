@@ -1,0 +1,158 @@
+name: "Phase 0 - measure the Arm gap"
+
+# Quantifies, on real Neoverse N2 silicon (GitHub's free Azure Cobalt 100 arm64 runners),
+# how much prompt-processing throughput an IQ4_XS model loses versus a Q4_K model of the
+# same architecture - because IQ4_XS has no entry in llama.cpp's repack type table.
+#
+# Judges / reviewers: hit "Run workflow". Everything below is reproducible at zero cost.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "llama-bench repetitions per case"
+        default: "5"
+      prompt_sizes:
+        description: "prefill sizes to measure (llama-bench -p)"
+        default: "512,2048"
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gap-measure.yml'
+      - 'bench/**'
+      - 'UPSTREAM_SHA'
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Neoverse N2 (Armv9, SVE2 + I8MM). Stock upstream defaults.
+          - label: n2-stock
+            runner: ubuntu-24.04-arm
+            repack: "ON"
+            kleidiai: "OFF"
+          # Same silicon, repack disabled: isolates what the repack fast path is worth.
+          # The delta here is the prize IQ4_XS is currently locked out of.
+          - label: n2-no-repack
+            runner: ubuntu-24.04-arm
+            repack: "OFF"
+            kleidiai: "OFF"
+          # Full Arm stack: KleidiAI is OFF by default upstream, which is itself a finding.
+          - label: n2-kleidiai
+            runner: ubuntu-24.04-arm
+            repack: "ON"
+            kleidiai: "ON"
+          # x86 reference point for price/perf framing.
+          - label: x86-stock
+            runner: ubuntu-24.04
+            repack: "ON"
+            kleidiai: "OFF"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the hardware we actually got
+        run: |
+          mkdir -p out
+          {
+            echo "=== ${{ matrix.label }} / ${{ matrix.runner }} ==="
+            date -u +"%Y-%m-%dT%H:%M:%SZ"
+            echo
+            lscpu || true
+            echo
+            echo "--- cpuinfo flags/features ---"
+            grep -m1 -E '^(Features|flags)' /proc/cpuinfo || true
+            echo
+            echo "--- memory ---"
+            free -g || true
+          } | tee "out/hardware-${{ matrix.label }}.txt"
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build build-essential python3
+
+      - name: Clone pinned upstream llama.cpp
+        run: |
+          SHA="$(tr -d '[:space:]' < UPSTREAM_SHA)"
+          echo "Pinned upstream: $SHA"
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git upstream
+          git -C upstream checkout "$SHA"
+          git -C upstream rev-parse HEAD | tee out/upstream-sha.txt
+
+      - name: Build
+        run: |
+          cmake -S upstream -B upstream/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CPU_REPACK=${{ matrix.repack }} \
+            -DGGML_CPU_KLEIDIAI=${{ matrix.kleidiai }} \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF
+          cmake --build upstream/build --target llama-bench -j"$(nproc)"
+
+      - name: Fetch model pairs (same architecture, different quant)
+        run: |
+          mkdir -p models
+          # name|url  - a 404 is tolerated so one bad URL cannot sink the run
+          while IFS='|' read -r name url; do
+            case "$name" in ''|'#'*) continue ;; esac
+            echo "::group::download $name"
+            if curl -fL --retry 3 --retry-delay 5 -o "models/$name" "$url"; then
+              ls -lh "models/$name"
+            else
+              echo "::warning::could not fetch $name - skipping"
+              rm -f "models/$name"
+            fi
+            echo "::endgroup::"
+          done < bench/models.txt
+          echo "--- fetched ---"; ls -lh models/ || true
+
+      - name: Benchmark
+        run: |
+          BIN=upstream/build/bin/llama-bench
+          THREADS="$(nproc)"
+          echo "threads=$THREADS"
+          first=1
+          for m in models/*.gguf; do
+            [ -e "$m" ] || continue
+            echo "::group::llama-bench $m"
+            if [ "$first" = "1" ]; then
+              "$BIN" -m "$m" \
+                -p "${{ inputs.prompt_sizes || '512,2048' }}" -n 128 \
+                -t "$THREADS" -r "${{ inputs.repeats || '5' }}" \
+                -o csv | tee -a out/bench-${{ matrix.label }}.csv
+              first=0
+            else
+              # drop the repeated CSV header on subsequent models
+              "$BIN" -m "$m" \
+                -p "${{ inputs.prompt_sizes || '512,2048' }}" -n 128 \
+                -t "$THREADS" -r "${{ inputs.repeats || '5' }}" \
+                -o csv | tail -n +2 | tee -a out/bench-${{ matrix.label }}.csv
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Summarise
+        if: always()
+        run: |
+          python3 bench/summarise.py "out/bench-${{ matrix.label }}.csv" \
+            --label "${{ matrix.label }}" >> "$GITHUB_STEP_SUMMARY" || \
+            echo "summariser failed - see raw artifact" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-${{ matrix.label }}
+          path: out/
+          if-no-files-found: warn

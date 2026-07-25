@@ -1,0 +1,11 @@
+# name|url
+# Paired quants of the SAME architecture, so any delta is the quant format's fast path,
+# not the model. Kept small enough for a 16 GB / 4 vCPU free runner.
+
+# --- dense control pair: Q4_K_M is in the repack table, IQ4_XS is not ---
+llama-3.2-3b-q4_k_m.gguf|https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+llama-3.2-3b-iq4_xs.gguf|https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-IQ4_XS.gguf
+
+# --- MoE pair: same question, but every expert matmul is MUL_MAT_ID ---
+olmoe-1b-7b-q4_k_m.gguf|https://huggingface.co/bartowski/OLMoE-1B-7B-0924-Instruct-GGUF/resolve/main/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf
+olmoe-1b-7b-iq4_xs.gguf|https://huggingface.co/bartowski/OLMoE-1B-7B-0924-Instruct-GGUF/resolve/main/OLMoE-1B-7B-0924-Instruct-IQ4_XS.gguf
