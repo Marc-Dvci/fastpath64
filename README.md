@@ -50,9 +50,48 @@ projected ceiling · [the run that produced them](https://github.com/Marc-Dvci/f
 | # | Work | Status |
 |---|---|---|
 | P0 | Measure the gap on Neoverse N2 | **done — gap confirmed, mechanism proven** |
-| P1 | `iq4_xs_8x8_q8_K` interleaved `smmla` GEMM + `8x4` `sdot` GEMV | next |
+| P1a | IQ4_XS layout + repack + reference kernels, validated | **done — [patch](patches/0001-iq4_xs-repack-reference.patch)** |
+| P1b | Vectorised `smmla` GEMM / `sdot` GEMV for `iq4_xs_8x8_q8_K` | in progress |
 | P2 | Expert-row grouping so MoE `MUL_MAT_ID` reaches M≥8 tiles | not started |
 | P3 | `GGML_OP_MUL_MAT_ID` support in KleidiAI | not started |
+
+### P1a — IQ4_XS is on the fast path
+
+`block_iq4_xsx8` mirrors `block_q4_Kx8` while keeping IQ4_XS's own scale encoding and its
+16-lo/16-hi nibble grouping, at exactly `8 * sizeof(block_iq4_xs)` — the repack buffer allocates
+`ggml_nbytes()`, so there is no room to pre-decode scales.
+
+**This step carries no speedup yet, and is not claimed to.** It registers portable reference
+kernels so the layout and dispatch can be proven correct before any intrinsics are written. The
+`smmla` kernel is P1b.
+
+Validated with [`tools/qemu/test_repack_equiv.cpp`](tools/qemu/test_repack_equiv.cpp), which fills
+a gap in upstream's own testing: `test-backend-ops` allocates into the *default* CPU buffer, so it
+never exercises the repack path at all. This test allocates identical weights into both buffer
+types and diffs the results.
+
+| emulated core | `-march` | IQ4_XS | Q4_K (control) |
+|---|---|---|---|
+| Neoverse N2 | `armv8.6-a+i8mm+dotprod` | claimed, `max_abs=1.5e-05` **PASS** | claimed, `max_abs=1.1e-05` PASS |
+| Neoverse N1 | `armv8.2-a+dotprod` | correctly **not** claimed (SKIP) | claimed `8x4`, PASS |
+
+IQ4_XS's error profile matches upstream's own Q4_K repack kernel, which is the right bar for a
+pure layout change. N1 is left on the existing path by design rather than regressed onto a scalar
+reference — a `sdot` variant would be needed to claim it.
+
+Run it yourself with no cloud account and no Arm hardware:
+
+```bash
+docker build -t fastpath64-cross tools/qemu/
+docker run --rm -v "$PWD/..:/src" fastpath64-cross bash /src/fastpath64/tools/qemu/run-equiv-test.sh
+```
+
+QEMU is used for **correctness only** — it does not model microarchitecture, and nothing timed
+under it is ever reported here as a benchmark.
+
+While building this, the test caught a latent upstream fault: `init_tensor` leaves `extra ==
+nullptr` for any type no kernel claims, and `set_tensor` dereferenced it without a check, turning
+a configuration error into a segfault. The patch adds an assert with a diagnostic message.
 
 ## Reproduce it yourself, for free
 
