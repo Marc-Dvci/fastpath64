@@ -1,0 +1,375 @@
+From 5f9c3ef93b7b066a4bcec75a3a82c215b2b9beaf Mon Sep 17 00:00:00 2001
+From: Marc Donovici <azerty10997@gmail.com>
+Date: Sat, 25 Jul 2026 13:49:43 +0200
+Subject: [PATCH] ggml-cpu: NEON smmla GEMM and sdot GEMV for iq4_xs_8x8_q8_K
+
+The GEMM feeds vmmlaq_s32 directly: a 16-byte weight load (one column pair)
+meets a 16-byte activation load (one row pair) with no shuffling, since the
+interleaved layout already stores 8 bytes per column contiguously. Lanes 0-1
+carry the first column's scale and 2-3 the second's, so the scale vector is
+[s0, s0, s1, s1]. IQ4_XS needs one 6-bit scale per 32-element sub-block and no
+min term, which makes this materially simpler than the q4_K equivalent.
+
+The GEMV stays on DOTPROD: at nr == 1 there is no second activation row to fill
+an smmla operand, and regressing batch-1 decode off the existing vec_dot path
+would cost more than the prefill win is worth. Activations are loaded once per
+8-element run and duplicated so one vdotq serves both columns of a pair.
+
+Validated against the non-repacked path across gemv-only, gemm-only and mixed
+shapes: max_abs 3.8e-06, below both the portable reference (1.5e-05) and
+upstream's own q4_K repack kernel (1.1e-05), as smmla accumulates exactly in
+int32 with fewer float rounding steps.
+---
+ ggml/src/ggml-cpu/arch-fallback.h     |  17 +-
+ ggml/src/ggml-cpu/arch/arm/repack.cpp | 251 ++++++++++++++++++++++++++
+ 2 files changed, 258 insertions(+), 10 deletions(-)
+
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
+index a9b0d78..7fc1775 100644
+--- a/ggml/src/ggml-cpu/arch-fallback.h
++++ b/ggml/src/ggml-cpu/arch-fallback.h
+@@ -5,7 +5,7 @@
+ // This effectively selects the generic implementation.
+ 
+ #if defined(GGML_CPU_GENERIC)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+@@ -75,9 +75,6 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
+-#define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+-#define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // repack.cpp
+ #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
+ #define ggml_quantize_mat_q8_K_4x8_generic ggml_quantize_mat_q8_K_4x8
+@@ -88,7 +85,7 @@
+ #define ggml_gemm_mxfp4_8x8_q8_0_generic ggml_gemm_mxfp4_8x8_q8_0
+ #define ggml_gemm_q2_K_8x8_q8_K_generic ggml_gemm_q2_K_8x8_q8_K
+ #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+@@ -119,7 +116,7 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__POWERPC__) || defined(__powerpc__)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // ref: https://github.com/ggml-org/llama.cpp/pull/14146#issuecomment-2972561679
+@@ -169,7 +166,7 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__loongarch64)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+@@ -219,7 +216,7 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__riscv)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+@@ -262,7 +259,7 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__s390x__)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+@@ -318,7 +315,7 @@
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__wasm__)
+-// iq4_xs 8x8: no native implementation on any arch yet (TODO: aarch64 i8mm kernel)
++// iq4_xs 8x8: native kernels exist on aarch64 only
+ #define ggml_gemv_iq4_xs_8x8_q8_K_generic ggml_gemv_iq4_xs_8x8_q8_K
+ #define ggml_gemm_iq4_xs_8x8_q8_K_generic ggml_gemm_iq4_xs_8x8_q8_K
+ // quants.c
+diff --git a/ggml/src/ggml-cpu/arch/arm/repack.cpp b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+index a753444..7b72940 100644
+--- a/ggml/src/ggml-cpu/arch/arm/repack.cpp
++++ b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+@@ -860,6 +860,115 @@ void ggml_gemv_q4_K_8x8_q8_K(int                        n,
+     ggml_gemv_q4_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
+ }
+ 
++// IQ4_XS, 8 interleaved columns, q8_K activations.
++//
++// Layout: row j's qs byte (8*c + i) lives at qs[64*c + 8*j + i], so a 16-byte load at
++// (128*sb + 64*chunk + 16*cp) yields column pair (2cp, 2cp+1) for one 8-byte chunk. Each
++// 32-element sub-block spans two chunks; low nibbles feed local elements 0..15, high nibbles
++// 16..31, and - unlike q4_K - a single 6-bit scale (ls - 32) covers all of them, with no min term.
++//
++// GEMV keeps the DOTPROD path: at nr == 1 there is no second activation row to fill an smmla
++// operand with, and regressing batch-1 decode off the existing vec_dot path would cost more than
++// the prefill win is worth.
++void ggml_gemv_iq4_xs_8x8_q8_K(int                        n,
++                               float * GGML_RESTRICT      s,
++                               size_t                     bs,
++                               const void * GGML_RESTRICT vx,
++                               const void * GGML_RESTRICT vy,
++                               int                        nr,
++                               int                        nc) {
++    constexpr int qk = QK_K;
++    const int     nb = n / qk;
++
++    constexpr int ncols_interleaved = 8;
++    constexpr int blocklen          = 8;
++
++    assert(n % qk == 0);
++    assert(nc % ncols_interleaved == 0);
++
++    UNUSED(bs);
++    UNUSED(nr);
++    UNUSED(nb);
++    UNUSED(ncols_interleaved);
++    UNUSED(blocklen);
++
++#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++    const uint8x16_t m4b     = vdupq_n_u8(0x0f);
++    const int8x16_t  kvalues = vld1q_s8(kvalues_iq4nl);
++
++    const block_q8_K * a_ptr = (const block_q8_K *) vy;
++
++    for (int x = 0; x < nc / ncols_interleaved; x++) {
++        const block_iq4_xsx8 * b_ptr = (const block_iq4_xsx8 *) vx + (x * nb);
++
++        float32x4_t sumf[2] = { vdupq_n_f32(0), vdupq_n_f32(0) };
++
++        for (int l = 0; l < nb; l++) {
++            int32x2_t acc_pair[4] = { vdup_n_s32(0), vdup_n_s32(0), vdup_n_s32(0), vdup_n_s32(0) };
++
++            for (int sb = 0; sb < QK_K / 32; sb++) {
++                // one 6-bit scale per (sub-block, column)
++                int32_t sc[8];
++                for (int j = 0; j < ncols_interleaved; j++) {
++                    const int ls = ((b_ptr[l].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
++                                   (((b_ptr[l].scales_h[j] >> (2 * sb)) & 3) << 4);
++                    sc[j] = ls - 32;
++                }
++
++                // activations for this sub-block, each 8-element run duplicated so one vdotq
++                // serves both columns of a pair
++                const int8_t * a_base = a_ptr[l].qs + sb * 32;
++                const int8x16_t a_dup[4] = {
++                    vcombine_s8(vld1_s8(a_base +  0), vld1_s8(a_base +  0)),
++                    vcombine_s8(vld1_s8(a_base +  8), vld1_s8(a_base +  8)),
++                    vcombine_s8(vld1_s8(a_base + 16), vld1_s8(a_base + 16)),
++                    vcombine_s8(vld1_s8(a_base + 24), vld1_s8(a_base + 24)),
++                };
++
++                for (int cp = 0; cp < ncols_interleaved / 2; cp++) {
++                    const uint8x16_t raw0 = vld1q_u8(b_ptr[l].qs + sb * 128 +      16 * cp);
++                    const uint8x16_t raw1 = vld1q_u8(b_ptr[l].qs + sb * 128 + 64 + 16 * cp);
++
++                    // local elements 0-7, 8-15 (low nibbles) then 16-23, 24-31 (high nibbles)
++                    const int8x16_t w[4] = {
++                        vqtbl1q_s8(kvalues, vandq_u8(raw0, m4b)),
++                        vqtbl1q_s8(kvalues, vandq_u8(raw1, m4b)),
++                        vqtbl1q_s8(kvalues, vshrq_n_u8(raw0, 4)),
++                        vqtbl1q_s8(kvalues, vshrq_n_u8(raw1, 4)),
++                    };
++
++                    int32x4_t d = vdupq_n_s32(0);
++                    for (int t = 0; t < 4; t++) {
++                        d = vdotq_s32(d, w[t], a_dup[t]);
++                    }
++
++                    // d = [c0 lo, c0 hi, c1 lo, c1 hi] -> [c0, c1]
++                    const int32x2_t pair = vpadd_s32(vget_low_s32(d), vget_high_s32(d));
++                    const int32x2_t scl  = vcreate_s32(((uint64_t) (uint32_t) sc[2 * cp]) |
++                                                       ((uint64_t) (uint32_t) sc[2 * cp + 1] << 32));
++                    acc_pair[cp] = vmla_s32(acc_pair[cp], pair, scl);
++                }
++            }
++
++            const int32x4_t acc_lo = vcombine_s32(acc_pair[0], acc_pair[1]);
++            const int32x4_t acc_hi = vcombine_s32(acc_pair[2], acc_pair[3]);
++
++            const float32x4_t a_d = vdupq_n_f32(a_ptr[l].d);
++            const float32x4_t b_d_lo = vcvt_f32_f16(vld1_f16((const __fp16 *) (b_ptr[l].d + 0)));
++            const float32x4_t b_d_hi = vcvt_f32_f16(vld1_f16((const __fp16 *) (b_ptr[l].d + 4)));
++
++            sumf[0] = vmlaq_f32(sumf[0], vcvtq_f32_s32(acc_lo), vmulq_f32(b_d_lo, a_d));
++            sumf[1] = vmlaq_f32(sumf[1], vcvtq_f32_s32(acc_hi), vmulq_f32(b_d_hi, a_d));
++        }
++
++        vst1q_f32(s + x * ncols_interleaved + 0, sumf[0]);
++        vst1q_f32(s + x * ncols_interleaved + 4, sumf[1]);
++    }
++    return;
++#endif  // defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++    ggml_gemv_iq4_xs_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
++}
++
+ void ggml_gemv_q5_K_8x4_q8_K(int                        n,
+                              float * GGML_RESTRICT      s,
+                              size_t                     bs,
+@@ -4269,6 +4378,148 @@ void ggml_gemm_q4_K_8x8_q8_K(int                        n,
+     ggml_gemm_q4_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
+ }
+ 
++// IQ4_XS GEMM: this is where smmla earns its keep.
++//
++// vmmlaq_s32(acc, a, b) treats both operands as 2x8 int8 matrices and returns the 2x2 product,
++// so a 16-byte weight load (one column pair) meets a 16-byte activation load (one row pair) with
++// no shuffling: lanes come out [w0*a0, w0*a1, w1*a0, w1*a1]. Lanes 0-1 therefore share the first
++// column's scale and lanes 2-3 the second's, which is why the scale vector is built as
++// [s0, s0, s1, s1].
++//
++// Sub-block sb (32 elements) occupies weight chunks 2*sb and 2*sb+1, i.e. byte offsets
++// 128*sb and 128*sb + 64. Its activations live at (sb/2)*256 + (sb%2)*128 in the q8_Kx4 block,
++// as four 32-byte groups holding rows 01 then rows 23.
++void ggml_gemm_iq4_xs_8x8_q8_K(int                        n,
++                               float * GGML_RESTRICT      s,
++                               size_t                     bs,
++                               const void * GGML_RESTRICT vx,
++                               const void * GGML_RESTRICT vy,
++                               int                        nr,
++                               int                        nc) {
++    constexpr int qk = QK_K;
++    const int     nb = n / qk;
++
++    constexpr int ncols_interleaved = 8;
++    constexpr int blocklen          = 8;
++
++    assert(n % qk == 0);
++    assert(nr % 4 == 0);
++    assert(nc % ncols_interleaved == 0);
++
++    UNUSED(nb);
++    UNUSED(ncols_interleaved);
++    UNUSED(blocklen);
++
++#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)
++    constexpr int    q8_k_blocklen = 4;
++    const uint8x16_t m4b           = vdupq_n_u8(0x0f);
++    const int8x16_t  kvalues       = vld1q_s8(kvalues_iq4nl);
++
++    float32x4_t acc_f32[8];
++
++    for (int y = 0; y < nr / q8_k_blocklen; y++) {
++        const block_q8_Kx4 * GGML_RESTRICT q8_ptr = (const block_q8_Kx4 *) vy + (y * nb);
++
++        for (int x = 0; x < nc / ncols_interleaved; x++) {
++            const block_iq4_xsx8 * GGML_RESTRICT q4_ptr = (const block_iq4_xsx8 *) vx + (x * nb);
++
++            for (int i = 0; i < 8; i++) {
++                acc_f32[i] = vdupq_n_f32(0);
++            }
++
++            for (int b = 0; b < nb; b++) {
++                int32x4_t acc[8];  // [cp] -> rows 01, [cp + 4] -> rows 23
++                for (int i = 0; i < 8; i++) {
++                    acc[i] = vdupq_n_s32(0);
++                }
++
++                for (int sb = 0; sb < QK_K / 32; sb++) {
++                    int32_t sc[8];
++                    for (int j = 0; j < ncols_interleaved; j++) {
++                        const int ls = ((q4_ptr[b].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
++                                       (((q4_ptr[b].scales_h[j] >> (2 * sb)) & 3) << 4);
++                        sc[j] = ls - 32;
++                    }
++
++                    const int8_t * q8_base = q8_ptr[b].qs + (sb / 2) * 256 + (sb % 2) * 128;
++
++                    int8x16_t q8_01[4];
++                    int8x16_t q8_23[4];
++                    for (int i = 0; i < 4; i++) {
++                        q8_01[i] = vld1q_s8(q8_base + i * 32);
++                        q8_23[i] = vld1q_s8(q8_base + i * 32 + 16);
++                    }
++
++                    for (int cp = 0; cp < ncols_interleaved / 2; cp++) {
++                        const uint8x16_t raw0 = vld1q_u8(q4_ptr[b].qs + sb * 128 +      16 * cp);
++                        const uint8x16_t raw1 = vld1q_u8(q4_ptr[b].qs + sb * 128 + 64 + 16 * cp);
++
++                        // ordered to match q8 groups 0..3 (local elements 0-7, 8-15, 16-23, 24-31)
++                        const int8x16_t w[4] = {
++                            vqtbl1q_s8(kvalues, vandq_u8(raw0, m4b)),
++                            vqtbl1q_s8(kvalues, vandq_u8(raw1, m4b)),
++                            vqtbl1q_s8(kvalues, vshrq_n_u8(raw0, 4)),
++                            vqtbl1q_s8(kvalues, vshrq_n_u8(raw1, 4)),
++                        };
++
++                        int32x4_t sb01 = vdupq_n_s32(0);
++                        int32x4_t sb23 = vdupq_n_s32(0);
++                        for (int t = 0; t < 4; t++) {
++                            sb01 = vmmlaq_s32(sb01, w[t], q8_01[t]);
++                            sb23 = vmmlaq_s32(sb23, w[t], q8_23[t]);
++                        }
++
++                        const int32x4_t bscale =
++                            vcombine_s32(vdup_n_s32(sc[2 * cp]), vdup_n_s32(sc[2 * cp + 1]));
++
++                        acc[cp]     = vmlaq_s32(acc[cp],     sb01, bscale);
++                        acc[cp + 4] = vmlaq_s32(acc[cp + 4], sb23, bscale);
++                    }
++                }
++
++                // untangle the i8mm 2x2 tiles into row-major order
++                for (int i = 0; i < 8; i++) {
++                    int32x2x2_t aux = vzip_s32(vget_low_s32(acc[i]), vget_high_s32(acc[i]));
++                    acc[i]          = vcombine_s32(aux.val[0], aux.val[1]);
++                }
++                const int32x4_t reorder_acc[8] = {
++                    vcombine_s32(vget_low_s32(acc[0]), vget_low_s32(acc[1])),
++                    vcombine_s32(vget_low_s32(acc[2]), vget_low_s32(acc[3])),
++                    vcombine_s32(vget_high_s32(acc[0]), vget_high_s32(acc[1])),
++                    vcombine_s32(vget_high_s32(acc[2]), vget_high_s32(acc[3])),
++                    vcombine_s32(vget_low_s32(acc[4]), vget_low_s32(acc[5])),
++                    vcombine_s32(vget_low_s32(acc[6]), vget_low_s32(acc[7])),
++                    vcombine_s32(vget_high_s32(acc[4]), vget_high_s32(acc[5])),
++                    vcombine_s32(vget_high_s32(acc[6]), vget_high_s32(acc[7])),
++                };
++
++                for (int i = 0; i < q8_k_blocklen; i++) {
++                    for (int j = 0; j < 2; j++) {
++                        const float32x4_t q8_d = vdupq_n_f32(q8_ptr[b].d[i]);
++                        const float32x4_t q4_d =
++                            vcvt_f32_f16(vld1_f16((const __fp16 *) (q4_ptr[b].d + j * 4)));
++                        const float32x4_t scale = vmulq_f32(q4_d, q8_d);
++
++                        acc_f32[2 * i + j] =
++                            vmlaq_f32(acc_f32[2 * i + j], vcvtq_f32_s32(reorder_acc[2 * i + j]), scale);
++                    }
++                }
++            }  // for b
++
++            for (int i = 0; i < q8_k_blocklen; i++) {
++                const int row = y * q8_k_blocklen + i;
++                for (int j = 0; j < 2; j++) {
++                    const int col = x * ncols_interleaved + j * 4;
++                    vst1q_f32(s + row * bs + col, acc_f32[2 * i + j]);
++                }
++            }
++        }  // for x
++    }  // for y
++    return;
++#endif  // defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)
++    ggml_gemm_iq4_xs_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
++}
++
+ void ggml_gemm_q5_K_8x8_q8_K(int                        n,
+                              float * GGML_RESTRICT      s,
+                              size_t                     bs,
+-- 
+2.41.0.windows.3
+

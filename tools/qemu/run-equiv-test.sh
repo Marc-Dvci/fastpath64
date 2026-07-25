@@ -43,13 +43,20 @@ for target in $TARGETS; do
         -Wl,-rpath,"$build/bin" \
         -o "/tmp/test_repack_equiv-${cpu}"
 
+    # N K M - M=1 is gemv only, M=4/8/16 gemm only, M=5/9 exercise both paths plus the
+    # remainder handling. K spans one and several QK_K super-blocks.
+    SHAPES=${SHAPES:-"64:512:1 64:512:4 64:512:5 64:256:8 128:1024:9 8:256:16"}
+
     for t in $TYPES; do
-        echo
-        echo "---- QEMU_CPU=$cpu  type=$t ----"
-        if ! QEMU_CPU="$cpu" qemu-aarch64 -L /usr/aarch64-linux-gnu \
-                -E LD_LIBRARY_PATH="$build/bin" "/tmp/test_repack_equiv-${cpu}" "$t" 64 512 5; then
-            status=1
-        fi
+        for shape in $SHAPES; do
+            N=${shape%%:*}; rest=${shape#*:}; K=${rest%%:*}; M=${rest##*:}
+            echo
+            echo "---- QEMU_CPU=$cpu  type=$t  N=$N K=$K M=$M ----"
+            if ! QEMU_CPU="$cpu" qemu-aarch64 -L /usr/aarch64-linux-gnu \
+                    -E LD_LIBRARY_PATH="$build/bin" "/tmp/test_repack_equiv-${cpu}" "$t" "$N" "$K" "$M"; then
+                status=1
+            fi
+        done
     done
 done
 

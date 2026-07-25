@@ -1,0 +1,146 @@
+name: "A/B - stock vs FastPath64 on Neoverse N2"
+
+# Builds BOTH variants in the same job on the same physical runner, so the comparison carries no
+# machine-to-machine variance. Correctness is gated before any timing is reported.
+#
+# Judges / reviewers: hit "Run workflow". Costs nothing; runs on GitHub's free Cobalt 100 runners.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "llama-bench repetitions per case"
+        default: "5"
+      prompt_sizes:
+        description: "prefill sizes (llama-bench -p)"
+        default: "512,2048"
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bench-fastpath.yml'
+      - 'patches/**'
+      - 'bench/**'
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: neoverse-n2-ab
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the hardware
+        run: |
+          mkdir -p out
+          { lscpu; echo; grep -m1 -E '^Features' /proc/cpuinfo; echo; free -g; } | tee out/hardware.txt
+          # the point of the whole project, in one grep
+          if grep -qE '^Features.*\bi8mm\b' /proc/cpuinfo; then
+            echo "::notice::runner exposes i8mm"
+          else
+            echo "::warning::runner does NOT expose i8mm - the smmla path will not engage"
+          fi
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build build-essential python3
+
+      - name: Clone pinned upstream twice
+        run: |
+          SHA="$(tr -d '[:space:]' < UPSTREAM_SHA)"
+          for v in stock patched; do
+            git clone --filter=blob:none -q https://github.com/ggml-org/llama.cpp.git "src-$v"
+            git -C "src-$v" checkout -q "$SHA"
+          done
+          echo "pinned at $SHA" | tee out/upstream-sha.txt
+
+      - name: Apply FastPath64 patches
+        run: |
+          cd src-patched
+          for p in ../patches/*.patch; do
+            echo "applying $(basename "$p")"
+            git apply --stat "$p"
+            git apply "$p"
+          done
+          git diff --stat HEAD | tail -3
+
+      - name: Build both variants
+        run: |
+          for v in stock patched; do
+            cmake -S "src-$v" -B "src-$v/build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+              > "out/cmake-$v.log" 2>&1
+            cmake --build "src-$v/build" --target llama-bench -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
+            echo "built $v"
+          done
+
+      - name: Correctness gate on real silicon
+        run: |
+          # the same equivalence check the QEMU harness runs, now on actual Neoverse N2
+          g++ -O2 -std=c++17 -I src-patched/ggml/include \
+            tools/qemu/test_repack_equiv.cpp \
+            -L src-patched/build/bin -lggml -lggml-base -lggml-cpu \
+            -Wl,-rpath,"$PWD/src-patched/build/bin" -o out/test_repack_equiv
+          fail=0
+          for shape in "64 512 1" "64 512 5" "128 1024 9" "8 256 16"; do
+            echo "--- iq4_xs $shape ---"
+            ./out/test_repack_equiv iq4_xs $shape | tee -a out/equiv.txt || fail=1
+          done
+          grep -q FAIL out/equiv.txt && fail=1
+          if [ "$fail" != 0 ]; then
+            echo "::error::equivalence gate failed - refusing to report timings"
+            exit 1
+          fi
+
+      - name: Fetch models
+        run: |
+          mkdir -p models
+          while IFS='|' read -r name url; do
+            case "$name" in ''|'#'*) continue ;; esac
+            if curl -fL --retry 3 --retry-delay 5 -o "models/$name" "$url"; then
+              ls -lh "models/$name"
+            else
+              echo "::warning::could not fetch $name"; rm -f "models/$name"
+            fi
+          done < bench/models.txt
+
+      - name: Benchmark both variants
+        run: |
+          THREADS="$(nproc)"
+          for v in stock patched; do
+            first=1
+            for m in models/*.gguf; do
+              [ -e "$m" ] || continue
+              echo "::group::$v $m"
+              if [ "$first" = 1 ]; then
+                "src-$v/build/bin/llama-bench" -m "$m" \
+                  -p "${{ inputs.prompt_sizes || '512,2048' }}" -n 128 \
+                  -t "$THREADS" -r "${{ inputs.repeats || '5' }}" -o csv | tee -a "out/bench-$v.csv"
+                first=0
+              else
+                "src-$v/build/bin/llama-bench" -m "$m" \
+                  -p "${{ inputs.prompt_sizes || '512,2048' }}" -n 128 \
+                  -t "$THREADS" -r "${{ inputs.repeats || '5' }}" -o csv | tail -n +2 | tee -a "out/bench-$v.csv"
+              fi
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Summarise A/B
+        if: always()
+        run: |
+          python3 bench/compare_ab.py out/bench-stock.csv out/bench-patched.csv \
+            | tee out/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastpath-ab
+          path: out/
+          if-no-files-found: warn
