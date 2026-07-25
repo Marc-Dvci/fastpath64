@@ -27,6 +27,12 @@ Features:   ... asimddp sve sve2 ... svei8mm svebf16 i8mm bf16
 | OLMoE-1B-7B | q4_k *(control)* | pp512 | 72.18 ±0.04 | 72.08 ±0.14 | 1.00x |
 | OLMoE-1B-7B | q4_k *(control)* | pp2048 | 49.70 ±0.02 | 49.69 ±0.02 | 1.00x |
 
+**Independently replicated.** A second run of the shipped patch series (0001-0003) on a different
+runner instance returned the same figures to two decimal places — 2.12x and 1.60x dense, 1.13x and
+1.09x MoE, controls at 1.00x — confirming both the result and that the DOTPROD GEMM added for
+pre-I8MM cores is inert on N2:
+[run 30167711247](https://github.com/Marc-Dvci/fastpath64/actions/runs/30167711247).
+
 **The controls land at 1.00x, to two decimal places, on all four cases.** Q4_K is a format this
 work does not touch. If the patched build were faster for some incidental reason — different
 compiler behaviour, a warmer cache, a quieter neighbour — the controls would have moved too. They

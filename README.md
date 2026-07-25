@@ -42,7 +42,8 @@ The same A/B on **gemma-4-12b-it-IQ4_XS**, four times larger and benchmarked alo
 **2.00x** at `pp512` and 1.61x at `pp2048` — so the gain is a property of the kernel, not of one
 model size.
 
-The Q4_K control lands at **1.00x to two decimals on all four cases**. Q4_K is a format this work
+Two independent runs of the shipped patch series returned these figures to two decimal places, and
+the Q4_K control lands at **1.00x on all four cases**. Q4_K is a format this work
 does not touch, so if the patched build were faster for any incidental reason — compiler luck, a
 warmer cache, a quieter neighbour — the control would have moved too. It did not.
 
