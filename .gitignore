@@ -6,3 +6,8 @@ build/
 *.gguf
 __pycache__/
 .venv/
+
+# CI artifact noise: keep the CSVs and hardware dumps, not build logs or binaries
+results/**/*.log
+results/**/test_repack_equiv
+results/raw-ab2/

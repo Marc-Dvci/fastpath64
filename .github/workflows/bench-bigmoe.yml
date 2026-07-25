@@ -1,0 +1,117 @@
+name: "Big MoE - gemma-4-26B-A4B on a free 4 vCPU runner"
+
+# The models this work is actually aimed at are large sparse MoEs in IQ4_XS. gemma-4-26B-A4B at
+# IQ4_XS is 12.7 GB, which fits a free runner's 16 GB - just. It gets its own workflow so the
+# download and the page cache do not have to share with anything else.
+#
+# Qwen3.6-35B-A3B is 17.4 GB at IQ4_XS and genuinely does not fit; no number is claimed for it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: "GGUF to benchmark"
+        default: "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf"
+      prompt_sizes:
+        description: "prefill sizes (llama-bench -p)"
+        default: "512,2048"
+      repeats:
+        description: "repetitions per case"
+        default: "3"
+
+concurrency:
+  group: bench-bigmoe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bigmoe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capacity check
+        run: |
+          mkdir -p out
+          { echo "=== disk ==="; df -h .; echo; echo "=== memory ==="; free -g; echo;
+            echo "=== cpu ==="; lscpu | head -20; } | tee out/capacity.txt
+          avail=$(df --output=avail -BG . | tail -1 | tr -dc '0-9')
+          echo "available disk: ${avail}G"
+          if [ "$avail" -lt 20 ]; then
+            echo "::warning::only ${avail}G free - a 12.7 GB model plus two build trees may not fit"
+          fi
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build build-essential python3
+
+      - name: Build both variants (llama-bench only)
+        run: |
+          SHA="$(tr -d '[:space:]' < UPSTREAM_SHA)"
+          for v in stock patched; do
+            git clone --filter=blob:none -q https://github.com/ggml-org/llama.cpp.git "src-$v"
+            git -C "src-$v" checkout -q "$SHA"
+          done
+          cd src-patched && for p in ../patches/*.patch; do git apply "$p"; done && cd ..
+          for v in stock patched; do
+            cmake -S "src-$v" -B "src-$v/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+              -DLLAMA_BUILD_TOOLS=ON > "out/cmake-$v.log" 2>&1
+            cmake --build "src-$v/build" --target llama-bench -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
+          done
+          # the build trees are large and no longer needed beyond bin/
+          du -sh src-stock src-patched || true
+
+      - name: Correctness gate
+        run: |
+          g++ -O2 -std=c++17 -I src-patched/ggml/include tools/qemu/test_repack_equiv.cpp \
+            -L src-patched/build/bin -lggml -lggml-base -lggml-cpu \
+            -Wl,-rpath,"$PWD/src-patched/build/bin" -o out/test_repack_equiv
+          ./out/test_repack_equiv iq4_xs 64 512 5 | tee out/equiv.txt
+          grep -q PASS out/equiv.txt || { echo "::error::equivalence failed"; exit 1; }
+
+      - name: Fetch the model
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 10 -o models/bigmoe.gguf "${{ inputs.model_url }}"
+          ls -lh models/bigmoe.gguf
+          df -h . | tail -1
+
+      - name: Benchmark
+        run: |
+          for v in stock patched; do
+            echo "::group::$v"
+            # mmap stays on: 12.7 GB of weights in 16 GB of RAM is tight, and file-backed pages
+            # degrade rather than OOM. If the page cache cannot hold the model both variants
+            # thrash equally, so the ratio survives even if the absolute numbers do not - the
+            # free -g after each run is there to show whether that happened.
+            "src-$v/build/bin/llama-bench" -m models/bigmoe.gguf \
+              -p "${{ inputs.prompt_sizes }}" -n 64 \
+              -t "$(nproc)" -r "${{ inputs.repeats }}" -o csv \
+              | tee -a "out/bench-$v.csv" || echo "::warning::$v run failed"
+            echo "::endgroup::"
+            free -g
+          done
+
+      - name: Summarise
+        if: always()
+        run: |
+          if [ -s out/bench-stock.csv ] && [ -s out/bench-patched.csv ]; then
+            python3 bench/compare_ab.py out/bench-stock.csv out/bench-patched.csv \
+              | tee out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "one or both runs produced no data - see artifacts" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bigmoe
+          path: out/
+          if-no-files-found: warn

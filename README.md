@@ -54,9 +54,9 @@ regression, and the correctness gate ·
 | P1a | Layout, repack, portable reference kernels | **done** — [patch](patches/0001-iq4_xs-repack-reference.patch) |
 | P1b | NEON `smmla` GEMM + `sdot` GEMV | **done** — [patch](patches/0002-iq4_xs-arm-neon-smmla.patch) |
 | P1c | `sdot` GEMM for pre-I8MM cores | **done** — [patch](patches/0003-iq4_xs-arm-dotprod-gemm.patch) |
-| — | Upstream PR | branch [pushed](https://github.com/Marc-Dvci/llama.cpp/tree/iq4-xs-arm-repack), [draft](docs/upstream-pr.md) |
-| P2 | Fix the 3% dense-decode regression | in progress |
-| P3 | `MUL_MAT_ID` support in KleidiAI | not started |
+| — | Upstream-ready branch | [pushed](https://github.com/Marc-Dvci/llama.cpp/tree/iq4-xs-arm-repack) + [description](docs/upstream-pr.md); no PR opened |
+| P2 | Vectorise scale decode (dense-decode regression) | [patch](patches/0004-iq4_xs-vectorise-scale-decode.patch), re-measuring |
+| P3 | gemma-4-26B-A4B on a free runner | `bench-bigmoe.yml`, queued |
 
 Three kernels, covering every Arm server CPU in service:
 
@@ -78,9 +78,9 @@ the prefill win is worth.
 - **Output is not bit-identical.** `smmla` accumulates in a different order than the reference path,
   so results differ by ~1e-6. Some shapes come out exactly equal, most do not. What is gated is
   numerical equivalence against the non-repacked path, not bitwise equality.
-- **No numbers for large MoEs.** gemma-4-26B-A4B and Qwen3.6-35B-A3B are the models this work aims
-  at, but they do not fit in a free runner's 16 GB. The MoE figure here (1.13x) is from OLMoE-1B-7B,
-  whose 1B active parameters make its expert matrices small — a conservative floor, not a ceiling.
+- **The large-MoE number is still being measured.** gemma-4-26B-A4B IQ4_XS is 12.7 GB and does fit
+  a free runner's 16 GB; that run is wired up in `bench-bigmoe.yml`. Qwen3.6-35B-A3B is 17.4 GB and
+  does not fit, so nothing is claimed for it. The MoE figure quoted here (1.13x) is OLMoE-1B-7B.
 - **No AMX measurement.** That Intel has an IQ4_XS path is read from upstream source; the x86 runner
   available here is an AMD EPYC with no AMX.
 

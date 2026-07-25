@@ -45,11 +45,27 @@ It ends up ahead of Q4_K because IQ4_XS carries no min/`dmin` term: one 6-bit sc
 
 ### Why the MoE gain is smaller
 
-OLMoE has **1B active parameters of 7B total**, so its expert matrices are small and each `smmla`
-tile amortises less setup. The gain is real but modest (1.13x). Larger MoEs — gemma-4-26B-A4B,
-Qwen3.6-35B-A3B, the models this work is actually aimed at — have far larger expert matrices, and
-should land closer to the dense figure. That is untested here: those models do not fit in a free
-runner's 16 GB, and no number is claimed for them.
+The first explanation I reached for — small expert matrices — does not survive the arithmetic.
+
+A dense prefill reads each weight once and reuses it across all T tokens in the batch. A MoE
+prefill reads **every** expert's weights while computing only the active fraction, so its
+arithmetic intensity is lower by roughly the sparsity ratio. OLMoE is 1B active of 7B total, so its
+expert matmuls run at about **1/7th** the FLOPs-per-byte of a dense model at the same batch size.
+Lower intensity means more bandwidth-bound, and a compute kernel cannot help what is waiting on
+memory.
+
+That reframes the expectation for bigger models rather than raising it. gemma-4-26B-A4B is 4B
+active of 26B — a sparsity ratio of 6.5, essentially OLMoE's 7. On the intensity argument alone it
+should gain about as much, not more. Pulling the other way, its expert matrices are far larger,
+which amortises GEMM setup better.
+
+Two effects in opposite directions is not a prediction I can make from the armchair, so it is
+being measured: `bench-bigmoe.yml` runs gemma-4-26B-A4B IQ4_XS on the same free runner. At 12.7 GB
+it does fit in 16 GB — just. Qwen3.6-35B-A3B is 17.4 GB at IQ4_XS and genuinely does not fit, and
+no number will be claimed for it.
+
+The same argument explains why *both* dense and MoE gains fall from `pp512` to `pp2048`: attention
+grows with sequence length and is untouched by this work, so the FFN's share of the total shrinks.
 
 ## Decode
 

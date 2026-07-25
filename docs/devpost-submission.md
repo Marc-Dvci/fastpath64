@@ -70,11 +70,12 @@ warmth, a quieter neighbour — the control would have moved too.
 
 **What I do not claim:** decode does not get faster (it is memory-bandwidth-bound, measured
 0.97–1.03x); output is numerically equivalent, not bit-identical, since `smmla` accumulates in a
-different order; no numbers for large MoEs, which do not fit a free runner's 16 GB; and no AMX
-measurement, since the AMX fact is read from upstream source rather than benchmarked.
+different order; the large-MoE number is still in flight (gemma-4-26B-A4B IQ4_XS is 12.7 GB and does
+fit, Qwen3.6-35B-A3B at 17.4 GB does not); and no AMX measurement, since the AMX fact is read from
+upstream source rather than benchmarked.
 
 **Reusable artifacts:**
-- Patch series, and a pushed branch ready for upstream review.
+- A four-patch series against pinned upstream llama.cpp, on a branch prepared for review.
 - `test_repack_equiv.cpp` — an equivalence gate for repacked kernels. Upstream's `test-backend-ops`
   allocates into the *default* CPU buffer and therefore never exercises the repack path at all,
   which is plausibly why this gap went unnoticed. It also caught a latent upstream null-deref.

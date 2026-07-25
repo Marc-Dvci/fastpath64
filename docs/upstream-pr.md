@@ -1,4 +1,8 @@
-# Draft PR to ggml-org/llama.cpp
+# Upstream-ready patch series (prepared, not submitted)
+
+The work is packaged so it can go upstream as-is: a rebased branch against pinned upstream, a
+commit series that separates layout from kernels, and the description below. **No pull request has
+been opened** — that is deliberate, and the decision to submit rests with the author.
 
 Branch: [`Marc-Dvci/llama.cpp:iq4-xs-arm-repack`](https://github.com/Marc-Dvci/llama.cpp/tree/iq4-xs-arm-repack)
 
