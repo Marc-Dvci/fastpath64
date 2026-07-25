@@ -55,7 +55,7 @@ class R:
         return self.i(fmt, n)
 
 
-def main(path):
+def main(path, share_of=None):
     with open(path, "rb") as f:
         r = R(f)
         if f.read(4) != b"GGUF":
@@ -87,6 +87,12 @@ def main(path):
                 expert_by_type[tname][0] += 1
                 expert_by_type[tname][1] += nbytes
 
+    # machine-readable mode: percentage of FFN/expert bytes carrying one type, for CI gating
+    if share_of:
+        total = sum(v[1] for v in expert_by_type.values()) or 1
+        print(f"{100 * expert_by_type.get(share_of, [0, 0])[1] / total:.1f}")
+        return 0
+
     def report(title, d):
         total = sum(v[1] for v in d.values()) or 1
         print(f"\n{title}")
@@ -100,4 +106,7 @@ def main(path):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "model.gguf"))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    want = next((f.split("=", 1)[1] for f in flags if f.startswith("--share=")), None)
+    sys.exit(main(args[0] if args else "model.gguf", want))

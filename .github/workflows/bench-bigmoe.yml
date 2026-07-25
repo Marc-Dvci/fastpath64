@@ -86,17 +86,10 @@ jobs:
       - name: Quant provenance gate
         run: |
           python3 bench/gguf_types.py models/bigmoe.gguf | tee out/gguf-types.txt
-          share=$(python3 - <<'EOF'
-import re
-txt = open("out/gguf-types.txt").read()
-tail = txt.split("FFN / expert")[-1]
-m = re.search(r"^IQ4_XS\s+\d+\s+[\d.]+\s+([\d.]+)%", tail, re.M)
-print(m.group(1) if m else "0")
-EOF
-)
+          share=$(python3 bench/gguf_types.py models/bigmoe.gguf --share=IQ4_XS)
           echo "IQ4_XS share of FFN tensors: ${share}%"
           if [ "${share%%.*}" -lt 50 ]; then
-            echo "::error::this file carries only ${share}% IQ4_XS in its FFN tensors - benchmarking it would measure code this work does not touch"
+            echo "::error::only ${share}% of FFN bytes are IQ4_XS - benchmarking this file would measure code this work does not touch"
             exit 1
           fi
 
