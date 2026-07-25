@@ -13,7 +13,7 @@ on:
         default: "5"
       prompt_sizes:
         description: "prefill sizes (llama-bench -p)"
-        default: "512,2048"
+        default: "512,2048,4096"
   push:
     branches: [main]
     paths:
@@ -75,7 +75,7 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
               > "out/cmake-$v.log" 2>&1
-            cmake --build "src-$v/build" --target llama-bench -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
+            cmake --build "src-$v/build" --target llama-bench llama-cli -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
             echo "built $v"
           done
 
@@ -131,11 +131,40 @@ jobs:
             done
           done
 
+      - name: Agent turn (end to end)
+        continue-on-error: true
+        run: |
+          python3 bench/make_agent_trace.py --target-words 4000 -o out/agent_prompt.txt
+          # the IQ4_XS model is the one this work touches
+          MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
+          if [ -z "$MODEL" ]; then echo "no iq4_xs model available"; exit 0; fi
+          python3 bench/agentbench.py \
+            --stock   src-stock/build/bin/llama-cli \
+            --patched src-patched/build/bin/llama-cli \
+            --model "$MODEL" --prompt out/agent_prompt.txt \
+            --n-predict 96 --threads "$(nproc)" --repeats 3 \
+            --json-out out/agentbench.json | tee out/agentbench.md
+
+      - name: Same prompt, same seed - does the model say the same thing?
+        continue-on-error: true
+        run: |
+          MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
+          [ -n "$MODEL" ] || exit 0
+          bash bench/diff_generation.sh \
+            src-stock/build/bin/llama-cli src-patched/build/bin/llama-cli \
+            "$MODEL" out/agent_prompt.txt 96 | tee out/generation-diff.md
+
       - name: Summarise A/B
         if: always()
         run: |
           python3 bench/compare_ab.py out/bench-stock.csv out/bench-patched.csv \
             | tee out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          for extra in out/agentbench.md out/generation-diff.md; do
+            if [ -f "$extra" ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              cat "$extra" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Upload results
         if: always()

@@ -1,0 +1,168 @@
+From 2ff3fc97eff4623894c4aee9840facebe410f42b Mon Sep 17 00:00:00 2001
+From: Marc Donovici <azerty10997@gmail.com>
+Date: Sat, 25 Jul 2026 13:56:32 +0200
+Subject: [PATCH] ggml-cpu: dotprod GEMM path for iq4_xs, covering pre-i8mm Arm
+ servers
+
+Neoverse N1 (Graviton2, Ampere Altra) has DOTPROD but no I8MM, and those parts
+are a large share of deployed Arm cloud capacity. sdot covers 2 columns x 1 row
+per instruction against smmla's 2x2, so this runs at roughly half the smmla rate
+- still far ahead of dropping to the portable reference.
+
+One interleaved layout serves both paths; the kernel selects at compile time and
+the dispatch gate drops to DOTPROD, which is the floor below which repacking
+stops paying for itself.
+
+Column-pair accumulators are held in registers rather than round-tripping
+through a stack array, which the first draft did 128 times per super-block.
+
+Validated on emulated neoverse-n1 across six shapes; several are bit-identical
+to the non-repacked path.
+---
+ ggml/src/ggml-cpu/arch/arm/repack.cpp | 110 +++++++++++++++++++++++++-
+ ggml/src/ggml-cpu/repack.cpp          |   8 +-
+ 2 files changed, 113 insertions(+), 5 deletions(-)
+
+diff --git a/ggml/src/ggml-cpu/arch/arm/repack.cpp b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+index 7b72940..f76b4f4 100644
+--- a/ggml/src/ggml-cpu/arch/arm/repack.cpp
++++ b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+@@ -4516,7 +4516,115 @@ void ggml_gemm_iq4_xs_8x8_q8_K(int                        n,
+         }  // for x
+     }  // for y
+     return;
+-#endif  // defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)
++#elif defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++    // DOTPROD-only cores (Neoverse N1 / Graviton2, Ampere Altra) have no smmla. sdot covers
++    // 2 columns x 1 row per instruction against smmla's 2x2, so this costs roughly twice the
++    // instructions - still far better than dropping to the portable reference.
++    constexpr int    q8_k_blocklen = 4;
++    const uint8x16_t m4b           = vdupq_n_u8(0x0f);
++    const int8x16_t  kvalues       = vld1q_s8(kvalues_iq4nl);
++
++    float32x4_t acc_f32[8];
++
++    for (int y = 0; y < nr / q8_k_blocklen; y++) {
++        const block_q8_Kx4 * GGML_RESTRICT q8_ptr = (const block_q8_Kx4 *) vy + (y * nb);
++
++        for (int x = 0; x < nc / ncols_interleaved; x++) {
++            const block_iq4_xsx8 * GGML_RESTRICT q4_ptr = (const block_iq4_xsx8 *) vx + (x * nb);
++
++            for (int i = 0; i < 8; i++) {
++                acc_f32[i] = vdupq_n_f32(0);
++            }
++
++            for (int b = 0; b < nb; b++) {
++                // acc2[m][cp]: activation row m, column pair cp - kept in registers so the
++                // inner loop never round-trips through memory
++                int32x2_t acc2[4][4];
++                for (int m = 0; m < 4; m++) {
++                    for (int cp = 0; cp < 4; cp++) {
++                        acc2[m][cp] = vdup_n_s32(0);
++                    }
++                }
++
++                for (int sb = 0; sb < QK_K / 32; sb++) {
++                    int32_t sc[8];
++                    for (int j = 0; j < ncols_interleaved; j++) {
++                        const int ls = ((q4_ptr[b].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
++                                       (((q4_ptr[b].scales_h[j] >> (2 * sb)) & 3) << 4);
++                        sc[j] = ls - 32;
++                    }
++
++                    const int8_t * q8_base = q8_ptr[b].qs + (sb / 2) * 256 + (sb % 2) * 128;
++
++                    // per activation row, each 8-element run duplicated so one sdot serves a
++                    // whole column pair
++                    int8x16_t a_dup[4][4];
++                    for (int t = 0; t < 4; t++) {
++                        const int8x16_t rows01 = vld1q_s8(q8_base + t * 32);
++                        const int8x16_t rows23 = vld1q_s8(q8_base + t * 32 + 16);
++                        a_dup[0][t] = vcombine_s8(vget_low_s8(rows01),  vget_low_s8(rows01));
++                        a_dup[1][t] = vcombine_s8(vget_high_s8(rows01), vget_high_s8(rows01));
++                        a_dup[2][t] = vcombine_s8(vget_low_s8(rows23),  vget_low_s8(rows23));
++                        a_dup[3][t] = vcombine_s8(vget_high_s8(rows23), vget_high_s8(rows23));
++                    }
++
++                    for (int cp = 0; cp < ncols_interleaved / 2; cp++) {
++                        const uint8x16_t raw0 = vld1q_u8(q4_ptr[b].qs + sb * 128 +      16 * cp);
++                        const uint8x16_t raw1 = vld1q_u8(q4_ptr[b].qs + sb * 128 + 64 + 16 * cp);
++
++                        const int8x16_t w[4] = {
++                            vqtbl1q_s8(kvalues, vandq_u8(raw0, m4b)),
++                            vqtbl1q_s8(kvalues, vandq_u8(raw1, m4b)),
++                            vqtbl1q_s8(kvalues, vshrq_n_u8(raw0, 4)),
++                            vqtbl1q_s8(kvalues, vshrq_n_u8(raw1, 4)),
++                        };
++
++                        const int32x2_t scl = vcreate_s32(((uint64_t) (uint32_t) sc[2 * cp]) |
++                                                          ((uint64_t) (uint32_t) sc[2 * cp + 1] << 32));
++
++                        for (int m = 0; m < 4; m++) {
++                            int32x4_t d = vdupq_n_s32(0);
++                            for (int t = 0; t < 4; t++) {
++                                d = vdotq_s32(d, w[t], a_dup[m][t]);
++                            }
++                            // d = [c0 lo, c0 hi, c1 lo, c1 hi] -> [c0, c1], then scale
++                            const int32x2_t pair = vpadd_s32(vget_low_s32(d), vget_high_s32(d));
++                            acc2[m][cp] = vmla_s32(acc2[m][cp], pair, scl);
++                        }
++                    }
++                }
++
++                // column pairs 0,1 form the low group of four columns; 2,3 the high group
++                int32x4_t acc[4][2];
++                for (int m = 0; m < 4; m++) {
++                    acc[m][0] = vcombine_s32(acc2[m][0], acc2[m][1]);
++                    acc[m][1] = vcombine_s32(acc2[m][2], acc2[m][3]);
++                }
++
++                for (int m = 0; m < q8_k_blocklen; m++) {
++                    for (int j = 0; j < 2; j++) {
++                        const float32x4_t q8_d = vdupq_n_f32(q8_ptr[b].d[m]);
++                        const float32x4_t q4_d =
++                            vcvt_f32_f16(vld1_f16((const __fp16 *) (q4_ptr[b].d + j * 4)));
++                        const float32x4_t scale = vmulq_f32(q4_d, q8_d);
++
++                        acc_f32[2 * m + j] =
++                            vmlaq_f32(acc_f32[2 * m + j], vcvtq_f32_s32(acc[m][j]), scale);
++                    }
++                }
++            }  // for b
++
++            for (int i = 0; i < q8_k_blocklen; i++) {
++                const int row = y * q8_k_blocklen + i;
++                for (int j = 0; j < 2; j++) {
++                    const int col = x * ncols_interleaved + j * 4;
++                    vst1q_f32(s + row * bs + col, acc_f32[2 * i + j]);
++                }
++            }
++        }  // for x
++    }  // for y
++    return;
++#endif  // MATMUL_INT8 / DOTPROD
+     ggml_gemm_iq4_xs_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
+ }
+ 
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index d8e72df..ac931fa 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -4829,10 +4829,10 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+             #endif
+         }
+     } else if (cur->type == GGML_TYPE_IQ4_XS) {
+-        // Only claimed where an optimized kernel exists. On cores without I8MM the portable
+-        // reference kernel would be slower than the existing non-repacked path, so IQ4_XS is
+-        // deliberately left alone there (TODO: 8x4 sdot variant for DOTPROD-only cores).
+-        if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
++        // One interleaved layout serves both paths; the kernel picks smmla or sdot at compile
++        // time. DOTPROD is the floor - below it the portable reference would be slower than the
++        // existing non-repacked path, so IQ4_XS is deliberately left alone there.
++        if (ggml_cpu_has_neon() && ggml_cpu_has_dotprod()) {
+             if (cur->ne[1] % 8 == 0) {
+                 return &iq4_xs_8x8_q8_K;
+             }
+-- 
+2.41.0.windows.3
+
