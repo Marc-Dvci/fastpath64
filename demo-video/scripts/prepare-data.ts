@@ -19,10 +19,13 @@ function readCsv(path: string): Row[] {
   const text = readFileSync(path, "utf8").trim();
   const [head, ...lines] = text.split(/\r?\n/);
   const cols = head.split(",");
+  // llama-bench wraps every cell in double quotes and never puts a comma inside one,
+  // so a plain split plus a dequote is sufficient - and forgetting the dequote turns
+  // every numeric field into NaN silently.
+  const dequote = (c: string) => c.replace(/^"(.*)"$/, "$1");
   return lines.map((l) => {
-    // llama-bench never quotes commas into these fields, so a plain split is safe
-    const cells = l.split(",");
-    return Object.fromEntries(cols.map((c, i) => [c, cells[i] ?? ""])) as Row;
+    const cells = l.split(",").map(dequote);
+    return Object.fromEntries(cols.map((c, i) => [dequote(c), cells[i] ?? ""])) as Row;
   });
 }
 

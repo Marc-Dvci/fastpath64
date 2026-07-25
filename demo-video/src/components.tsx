@@ -2,6 +2,9 @@ import React from "react";
 import {interpolate, spring, useCurrentFrame, useVideoConfig} from "remotion";
 import {colors, fonts} from "./theme";
 
+/** vertical room reserved above every bar for its value label */
+const LABEL_SPACE = 52;
+
 export const Fade: React.FC<{at: number; children: React.ReactNode; dur?: number}> = ({
   at, dur = 12, children,
 }) => {
@@ -64,16 +67,24 @@ export const Bars: React.FC<{
   return (
     <div style={{fontFamily: fonts.sans}}>
       <div style={{color: colors.textMuted, fontSize: 20, marginBottom: 10}}>{unit}</div>
-      <div style={{display: "flex", gap: 74, alignItems: "flex-end", height}}>
+      {/* the value label lives inside the column, so the bar may only use the height that
+          remains once the label is accounted for - otherwise a full-height bar pushes its
+          label up out of the container and over whatever sits above it */}
+      {/* only the bar row carries a fixed height: the group's labels sit below it and would
+          otherwise make the column taller than its parent, overflowing upward */}
+      <div style={{display: "flex", gap: 74, alignItems: "flex-start"}}>
         {groups.map((g, gi) => (
           <div key={gi} style={{display: "flex", flexDirection: "column", alignItems: "center"}}>
             <div style={{display: "flex", gap: 10, alignItems: "flex-end", height}}>
               {g.values.map((b, bi) => {
                 const delay = at + gi * 6 + bi * 5;
                 const p = spring({frame: f - delay, fps, config: {damping: 200, mass: 0.6}});
-                const h = Math.max(0, (b.v / max) * height * p);
+                const h = Math.max(0, (b.v / max) * (height - LABEL_SPACE) * p);
                 return (
-                  <div key={bi} style={{display: "flex", flexDirection: "column", alignItems: "center"}}>
+                  <div key={bi} style={{
+                    display: "flex", flexDirection: "column", alignItems: "center",
+                    justifyContent: "flex-end", height: "100%",
+                  }}>
                     <div style={{
                       color: colors.text, fontSize: 30, fontWeight: 700, marginBottom: 10,
                       opacity: p > 0.35 ? 1 : 0, fontVariantNumeric: "tabular-nums",
