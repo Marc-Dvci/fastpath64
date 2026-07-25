@@ -1,0 +1,111 @@
+From 5ecc6de0b51d2334008532c68236694e9a05294e Mon Sep 17 00:00:00 2001
+From: Marc Donovici <azerty10997@gmail.com>
+Date: Sat, 25 Jul 2026 15:14:22 +0200
+Subject: [PATCH] ggml-cpu: vectorise iq4_xs sub-block scale decode
+
+The scalar decode cost ~40 ALU ops plus 16 strided loads per sub-block, 64
+decodes per super-block. GEMM amortises that over 32 outputs; GEMV has only 8,
+which showed up as a ~3% batch-1 decode regression against the non-repacked
+vec_dot path.
+
+scales_l is row-major, so the eight bytes a sub-block needs sit at stride 4 --
+exactly what vld4_u8 de-interleaves, one instruction for all four sub-block
+pairs. The 2*sb shift uses a vector shift because sb is a loop variable and the
+_n_ intrinsics require a literal.
+
+Equivalence unchanged across all 24 shape/type/core combinations.
+---
+ ggml/src/ggml-cpu/arch/arm/repack.cpp | 53 +++++++++++++++++----------
+ 1 file changed, 34 insertions(+), 19 deletions(-)
+
+diff --git a/ggml/src/ggml-cpu/arch/arm/repack.cpp b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+index f76b4f4..d0a2f5b 100644
+--- a/ggml/src/ggml-cpu/arch/arm/repack.cpp
++++ b/ggml/src/ggml-cpu/arch/arm/repack.cpp
+@@ -860,6 +860,25 @@ void ggml_gemv_q4_K_8x8_q8_K(int                        n,
+     ggml_gemv_q4_K_8x8_q8_K_generic(n, s, bs, vx, vy, nr, nc);
+ }
+ 
++#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++// Decode the eight columns' 6-bit scales for one 32-element sub-block.
++//
++// scales_l is stored row-major (row j at byte j*4 + sb/2), so the eight bytes a sub-block needs
++// sit at stride 4 - which is exactly what vld4_u8 de-interleaves, in one instruction for all four
++// sub-block pairs. Done scalar this costs ~40 ALU ops plus 16 strided loads per sub-block, which
++// GEMV amortises over only 8 columns of output against the GEMM's 32.
++//
++// The shift by 2*sb has to be a vector shift rather than vshrq_n_u16: sb is a loop variable, and
++// the _n_ intrinsics require a literal.
++static inline void iq4_xs_sub_scales(const uint8x8x4_t & sl, const uint16x8_t & sh, int sb, int16_t * out) {
++    const uint8x8_t  byte = sl.val[sb >> 1];
++    const uint8x8_t  lo   = (sb & 1) ? vshr_n_u8(byte, 4) : vand_u8(byte, vdup_n_u8(0x0F));
++    const uint16x8_t hi   = vandq_u16(vshlq_u16(sh, vdupq_n_s16(-(int16_t) (2 * sb))), vdupq_n_u16(3));
++    const uint16x8_t ls   = vorrq_u16(vmovl_u8(lo), vshlq_n_u16(hi, 4));
++    vst1q_s16(out, vsubq_s16(vreinterpretq_s16_u16(ls), vdupq_n_s16(32)));
++}
++#endif
++
+ // IQ4_XS, 8 interleaved columns, q8_K activations.
+ //
+ // Layout: row j's qs byte (8*c + i) lives at qs[64*c + 8*j + i], so a 16-byte load at
+@@ -906,14 +925,12 @@ void ggml_gemv_iq4_xs_8x8_q8_K(int                        n,
+         for (int l = 0; l < nb; l++) {
+             int32x2_t acc_pair[4] = { vdup_n_s32(0), vdup_n_s32(0), vdup_n_s32(0), vdup_n_s32(0) };
+ 
++            const uint8x8x4_t sl = vld4_u8(b_ptr[l].scales_l);
++            const uint16x8_t  sh = vld1q_u16(b_ptr[l].scales_h);
++
+             for (int sb = 0; sb < QK_K / 32; sb++) {
+-                // one 6-bit scale per (sub-block, column)
+-                int32_t sc[8];
+-                for (int j = 0; j < ncols_interleaved; j++) {
+-                    const int ls = ((b_ptr[l].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
+-                                   (((b_ptr[l].scales_h[j] >> (2 * sb)) & 3) << 4);
+-                    sc[j] = ls - 32;
+-                }
++                int16_t sc[8];
++                iq4_xs_sub_scales(sl, sh, sb, sc);
+ 
+                 // activations for this sub-block, each 8-element run duplicated so one vdotq
+                 // serves both columns of a pair
+@@ -4433,13 +4450,12 @@ void ggml_gemm_iq4_xs_8x8_q8_K(int                        n,
+                     acc[i] = vdupq_n_s32(0);
+                 }
+ 
++                const uint8x8x4_t sl = vld4_u8(q4_ptr[b].scales_l);
++                const uint16x8_t  sh = vld1q_u16(q4_ptr[b].scales_h);
++
+                 for (int sb = 0; sb < QK_K / 32; sb++) {
+-                    int32_t sc[8];
+-                    for (int j = 0; j < ncols_interleaved; j++) {
+-                        const int ls = ((q4_ptr[b].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
+-                                       (((q4_ptr[b].scales_h[j] >> (2 * sb)) & 3) << 4);
+-                        sc[j] = ls - 32;
+-                    }
++                    int16_t sc[8];
++                    iq4_xs_sub_scales(sl, sh, sb, sc);
+ 
+                     const int8_t * q8_base = q8_ptr[b].qs + (sb / 2) * 256 + (sb % 2) * 128;
+ 
+@@ -4546,13 +4562,12 @@ void ggml_gemm_iq4_xs_8x8_q8_K(int                        n,
+                     }
+                 }
+ 
++                const uint8x8x4_t sl = vld4_u8(q4_ptr[b].scales_l);
++                const uint16x8_t  sh = vld1q_u16(q4_ptr[b].scales_h);
++
+                 for (int sb = 0; sb < QK_K / 32; sb++) {
+-                    int32_t sc[8];
+-                    for (int j = 0; j < ncols_interleaved; j++) {
+-                        const int ls = ((q4_ptr[b].scales_l[j * (QK_K / 64) + sb / 2] >> (4 * (sb % 2))) & 0xF) |
+-                                       (((q4_ptr[b].scales_h[j] >> (2 * sb)) & 3) << 4);
+-                        sc[j] = ls - 32;
+-                    }
++                    int16_t sc[8];
++                    iq4_xs_sub_scales(sl, sh, sb, sc);
+ 
+                     const int8_t * q8_base = q8_ptr[b].qs + (sb / 2) * 256 + (sb % 2) * 128;
+ 
+-- 
+2.41.0.windows.3
+

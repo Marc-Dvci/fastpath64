@@ -14,12 +14,9 @@ on:
       prompt_sizes:
         description: "prefill sizes (llama-bench -p)"
         default: "512,2048,4096"
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/bench-fastpath.yml'
-      - 'patches/**'
-      - 'bench/**'
+concurrency:
+  group: bench-ab
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -75,7 +72,7 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
               > "out/cmake-$v.log" 2>&1
-            cmake --build "src-$v/build" --target llama-bench llama-cli -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
+            cmake --build "src-$v/build" --target llama-bench llama-app -j"$(nproc)" >> "out/cmake-$v.log" 2>&1
             echo "built $v"
           done
 
@@ -139,8 +136,8 @@ jobs:
           MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
           if [ -z "$MODEL" ]; then echo "no iq4_xs model available"; exit 0; fi
           python3 bench/agentbench.py \
-            --stock   src-stock/build/bin/llama-cli \
-            --patched src-patched/build/bin/llama-cli \
+            --stock   src-stock/build/bin/llama-app \
+            --patched src-patched/build/bin/llama-app \
             --model "$MODEL" --prompt out/agent_prompt.txt \
             --n-predict 96 --threads "$(nproc)" --repeats 3 \
             --json-out out/agentbench.json | tee out/agentbench.md
@@ -151,7 +148,7 @@ jobs:
           MODEL=$(ls models/*iq4_xs*.gguf 2>/dev/null | head -1)
           [ -n "$MODEL" ] || exit 0
           bash bench/diff_generation.sh \
-            src-stock/build/bin/llama-cli src-patched/build/bin/llama-cli \
+            src-stock/build/bin/llama-app src-patched/build/bin/llama-app \
             "$MODEL" out/agent_prompt.txt 96 | tee out/generation-diff.md
 
       - name: Summarise A/B

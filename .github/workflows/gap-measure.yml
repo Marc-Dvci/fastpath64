@@ -15,13 +15,6 @@ on:
       prompt_sizes:
         description: "prefill sizes to measure (llama-bench -p)"
         default: "512,2048"
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/gap-measure.yml'
-      - 'bench/**'
-      - 'UPSTREAM_SHA'
-
 permissions:
   contents: read
 
