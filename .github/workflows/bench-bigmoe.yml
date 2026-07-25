@@ -1,17 +1,18 @@
-name: "Big MoE - gemma-4-26B-A4B on a free 4 vCPU runner"
+name: "Large model - gemma-4-12b on a free 4 vCPU runner"
 
-# The models this work is actually aimed at are large sparse MoEs in IQ4_XS. gemma-4-26B-A4B at
-# IQ4_XS is 12.7 GB, which fits a free runner's 16 GB - just. It gets its own workflow so the
-# download and the page cache do not have to share with anything else.
+# A larger model than the 3B used in the main A/B, run alone so the download and the page cache
+# do not share with anything else.
 #
-# Qwen3.6-35B-A3B is 17.4 GB at IQ4_XS and genuinely does not fit; no number is claimed for it.
+# The quant-provenance gate below exists because a file named IQ4_XS does not necessarily contain
+# IQ4_XS: "dynamic" quantisations mix types per tensor, and llama.cpp reports only the intended
+# ftype. Benchmarking such a file measures nothing about a kernel targeting one type.
 
 on:
   workflow_dispatch:
     inputs:
       model_url:
         description: "GGUF to benchmark"
-        default: "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf"
+        default: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-IQ4_XS.gguf"
       prompt_sizes:
         description: "prefill sizes (llama-bench -p)"
         default: "512,2048"
@@ -81,6 +82,23 @@ jobs:
           curl -fL --retry 3 --retry-delay 10 -o models/bigmoe.gguf "${{ inputs.model_url }}"
           ls -lh models/bigmoe.gguf
           df -h . | tail -1
+
+      - name: Quant provenance gate
+        run: |
+          python3 bench/gguf_types.py models/bigmoe.gguf | tee out/gguf-types.txt
+          share=$(python3 - <<'EOF'
+import re
+txt = open("out/gguf-types.txt").read()
+tail = txt.split("FFN / expert")[-1]
+m = re.search(r"^IQ4_XS\s+\d+\s+[\d.]+\s+([\d.]+)%", tail, re.M)
+print(m.group(1) if m else "0")
+EOF
+)
+          echo "IQ4_XS share of FFN tensors: ${share}%"
+          if [ "${share%%.*}" -lt 50 ]; then
+            echo "::error::this file carries only ${share}% IQ4_XS in its FFN tensors - benchmarking it would measure code this work does not touch"
+            exit 1
+          fi
 
       - name: Benchmark
         run: |
