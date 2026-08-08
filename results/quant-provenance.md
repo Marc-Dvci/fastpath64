@@ -44,7 +44,9 @@ tensors, which standard quantisation keeps at higher precision and which this wo
 
 ## Consequence for the harness
 
-Quant provenance is now a gate rather than an assumption: the benchmark workflow parses the GGUF
-tensor table before running and refuses to proceed if the FFN tensors are not predominantly the
-type under test. A measurement on the wrong file is worse than no measurement, because it looks
-like a result.
+Quant provenance is now a gate rather than an assumption. Both benchmark workflows parse the GGUF
+tensor table before running and refuse to proceed if the FFN tensors of a file under test are not
+predominantly the type under test — `.github/workflows/bench-fastpath.yml` (which gates the
+`*iq4_xs*` files and prints the histogram for the `q4_k` controls, which are supposed to be `q4_k`)
+and `.github/workflows/bench-bigmoe.yml`. A measurement on the wrong file is worse than no
+measurement, because it looks like a result.

@@ -114,6 +114,35 @@ jobs:
             fi
           done < bench/models.txt
 
+      - name: Quant provenance gate
+        run: |
+          # A file named IQ4_XS need not contain IQ4_XS: "dynamic" quantisations mix types per
+          # tensor and llama.cpp reports only the intended ftype. Benchmarking such a file against
+          # a kernel targeting one type measures code the patch never touches - and returns a
+          # clean 1.00x that looks like a result. See results/quant-provenance.md.
+          fail=0
+          for m in models/*.gguf; do
+            [ -e "$m" ] || continue
+            echo "::group::$(basename "$m")"
+            python3 bench/gguf_types.py "$m" | tee -a out/gguf-types.txt
+            echo "::endgroup::"
+            # only the files under test are gated; the q4_k controls are supposed to be q4_k
+            case "$(basename "$m")" in
+              *iq4_xs*)
+                share=$(python3 bench/gguf_types.py "$m" --share=IQ4_XS)
+                echo "$(basename "$m"): ${share}% of FFN bytes are IQ4_XS"
+                if [ "${share%%.*}" -lt 50 ]; then
+                  echo "::error::$(basename "$m") is only ${share}% IQ4_XS in its FFN tensors"
+                  fail=1
+                fi
+                ;;
+            esac
+          done
+          if [ "$fail" != 0 ]; then
+            echo "::error::provenance gate failed - refusing to report timings"
+            exit 1
+          fi
+
       - name: Benchmark both variants
         run: |
           THREADS="$(nproc)"

@@ -86,6 +86,14 @@ The MoE figure is the conservative one: OLMoE has 1B active parameters, so its e
 small and GEMM efficiency is limited. Larger MoEs (gemma-4-26B-A4B, Qwen3.6-35B-A3B) have much
 bigger expert matrices and should gain more — that is a P2 question.
 
+> **Superseded.** That last sentence was wrong, and P1 showed why. Expert-matrix size is not the
+> brake; sparsity is. A MoE prefill reads *every* expert's weights while computing only the active
+> fraction, so arithmetic intensity falls with the sparsity ratio and the workload moves toward the
+> bandwidth-bound regime a compute kernel cannot help. A sparser model is therefore capped
+> *harder*, not less. The reasoning is in
+> [p1-results.md](p1-results.md#why-the-moe-gain-is-smaller); the prediction is left in place
+> rather than edited out, because the correction is the finding.
+
 ## x86 reference
 
 The x86 job landed on an **AMD EPYC 9V74**, which has AVX-512 but no AMX. It shows the same

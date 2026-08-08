@@ -66,10 +66,43 @@ happy to contribute it as a proper test if that's wanted.
 
 ## Performance
 
-<!-- filled from the A/B run before submitting -->
-
 Measured on GitHub's free `ubuntu-24.04-arm` runners (Azure Cobalt 100, Neoverse N2, 4 vCPU),
-building stock and patched in the same job on the same machine.
+building stock and patched **in the same job on the same machine**, so the comparison carries no
+machine-to-machine variance. `llama-bench -r 5 -t 4`.
+
+| Llama-3.2-3B-Instruct-IQ4_XS | stock | patched | |
+|---|---:|---:|---:|
+| `pp512` | 24.95 ±0.02 | **52.85 ±0.02** | **2.12x** |
+| `pp2048` | 17.72 ±0.01 | **28.31 ±0.01** | **1.60x** |
+| `tg128` | 16.78 ±0.02 | 16.22 ±0.10 | 0.97x |
+
+`Q4_K_M`, which this change does not touch, is carried as a control in every run and lands at
+1.00x to two decimal places on all four prefill cases — so the IQ4_XS delta is the kernel and not
+the run conditions.
+
+Other models, same harness:
+
+| | `pp512` | `pp2048` | decode |
+|---|---:|---:|---:|
+| gemma-4-12b-it-IQ4_XS | **2.00x** | 1.61x | 0.92x (`tg64`) |
+| OLMoE-1B-7B-Instruct-IQ4_XS (MoE) | **1.13x** | 1.09x | 1.03x |
+
+The MoE gain is smaller because a MoE prefill reads every expert's weights while computing only the
+active fraction, so its arithmetic intensity is lower by roughly the sparsity ratio and it sits
+closer to the bandwidth-bound regime.
+
+**Decode carries a small regression** (0.97x dense at 3B, 0.92x at 12B). The repacked GEMV performs
+per-sub-block scale decoding that the non-repacked `vec_dot` path does not, and at `nr == 1` there
+are only 8 output columns to amortise it over. A `vld4_u8`-based fix was written and measured; it
+cost ~10% of prefill through a store-to-load forwarding stall and was reverted rather than shipped.
+The correct fix keeps the scales in registers and is a larger change to the inner loop; I would
+rather land the GEMM win first and treat GEMV separately, but I am happy to hold this until GEMV is
+neutral if that is preferred.
+
+On a whole agent turn — 5145-token tool-calling prompt, 96 tokens generated — the end-to-end wall
+clock improves 1.30x, and stock and patched emit byte-identical output under greedy decode.
+
+Three independent runs on separate runner instances returned these ratios to two decimal places.
 
 ## Drive-by fix
 

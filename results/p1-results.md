@@ -27,11 +27,12 @@ Features:   ... asimddp sve sve2 ... svei8mm svebf16 i8mm bf16
 | OLMoE-1B-7B | q4_k *(control)* | pp512 | 72.18 ±0.04 | 72.08 ±0.14 | 1.00x |
 | OLMoE-1B-7B | q4_k *(control)* | pp2048 | 49.70 ±0.02 | 49.69 ±0.02 | 1.00x |
 
-**Independently replicated.** A second run of the shipped patch series (0001-0003) on a different
-runner instance returned the same figures to two decimal places — 2.12x and 1.60x dense, 1.13x and
-1.09x MoE, controls at 1.00x — confirming both the result and that the DOTPROD GEMM added for
-pre-I8MM cores is inert on N2:
-[run 30167711247](https://github.com/Marc-Dvci/fastpath64/actions/runs/30167711247).
+**Independently replicated, twice.** Two further runs of the shipped patch series (0001-0003), on
+different runner instances, returned the same ratios to two decimal places — 2.12x and 1.60x dense,
+1.13x and 1.09x MoE, controls at 1.00x — confirming both the result and that the DOTPROD GEMM added
+for pre-I8MM cores is inert on N2:
+[run 30167711247](https://github.com/Marc-Dvci/fastpath64/actions/runs/30167711247) and
+[run 30171245415](https://github.com/Marc-Dvci/fastpath64/actions/runs/30171245415).
 
 **The controls land at 1.00x, to two decimal places, on all four cases.** Q4_K is a format this
 work does not touch. If the patched build were faster for some incidental reason — different
@@ -132,11 +133,13 @@ larger model runs proportionally more of it.
 
 ## What this means for an agent turn
 
-An agent turn is overwhelmingly prefill: a large system prompt, tool schemas, history and
-retrieved context go in; a few dozen tokens of JSON come out. Dividing out the measured pp2048
-rates, a 2048-token agent prompt in IQ4_XS costs about **115 s** of prefill on stock and **72 s**
-patched on this 4 vCPU instance — derived from the throughput above, not separately timed.
+Measured end to end rather than derived: a 5145-token tool-calling prompt with 96 tokens of
+structured reply runs **1.30x faster** as a whole turn (470.09 s → 362.28 s), of which 99% is
+prefill, and the two builds emit **byte-identical** output on greedy decode with a fixed seed.
 
-No end-to-end agent-turn figure is reported. `bench/agentbench.py` exists and is wired into the
-workflow, but its first run invoked the unified `llama` binary without a subcommand and produced
-nothing; the invocation is fixed and the measurement is simply absent rather than estimated.
+Full tables, the per-run spread and the length trend are in
+[agent-turn.md](agent-turn.md) ·
+[run 30171245415](https://github.com/Marc-Dvci/fastpath64/actions/runs/30171245415).
+
+That run is also the third independent replication of the prefill figures above: 2.12x and 1.60x
+dense, 1.13x and 1.09x MoE, controls at 1.00x.

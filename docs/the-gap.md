@@ -97,11 +97,24 @@ the format that gives back the performance you were trying to buy.**
 
 ## 6. What this repo does about it
 
-| # | Work | Opens |
-|---|---|---|
-| P1 | `iq4_xs_8x8_q8_K` row-interleaved `smmla` GEMM + `8x4` `sdot` GEMV, modelled on the existing `q4_K` case at `repack.cpp:4600` | the repack door |
-| P2 | expert-row grouping so MoE `MUL_MAT_ID` reaches M≥8 tiles instead of per-expert GEMV | `smmla` utilisation under real serving |
-| P3 | `GGML_OP_MUL_MAT_ID` support in `kleidiai.cpp` | the KleidiAI door |
+**Shipped.** `iq4_xs_8x8_q8_K`: the interleaved layout and repack, a portable reference, a NEON
+`smmla` GEMM, a DOTPROD `sdot` GEMM for pre-I8MM cores, and a DOTPROD GEMV — modelled on the
+existing `q4_K` case at `repack.cpp:4600`. This opens the **repack door**, which is the door MoE
+already goes through, since repack handles `MUL_MAT_ID` and KleidiAI does not.
 
 Measured on free Arm silicon (GitHub `ubuntu-24.04-arm` = Azure Cobalt 100, Neoverse N2 with
-SVE2 + I8MM), reproducible by anyone with one click.
+SVE2 + I8MM), reproducible by anyone with one click. Results: [p1-results.md](../results/p1-results.md).
+
+**Not shipped, and named so the boundary is clear.** Two further doors stay shut, and neither is
+claimed here:
+
+| | what it would take | why it is out of scope |
+|---|---|---|
+| KleidiAI door | `GGML_OP_MUL_MAT_ID` support in `kleidiai.cpp`, plus IQ types | Arm's own library; the right place to fix it is upstream KleidiAI, not a patch against llama.cpp's copy |
+| MoE tile utilisation | expert-row grouping so `MUL_MAT_ID` reaches M≥8 tiles rather than per-expert GEMV | a scheduling change in ggml's MoE path, independent of any quantisation type |
+
+The second one is worth a caveat, because an earlier version of this document assumed it was the
+main brake on MoE gains. It is not. [p1-results.md](../results/p1-results.md#why-the-moe-gain-is-smaller)
+shows the binding constraint is arithmetic intensity: a MoE prefill reads every expert's weights
+while computing only the active fraction, so it is nearer the bandwidth-bound regime and grouping
+tiles cannot recover what memory is holding back.

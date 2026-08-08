@@ -1,0 +1,54 @@
+{
+  "stock": {
+    "ttft_s": 463.48197999999996,
+    "decode_s": 6.5913900000000005,
+    "turn_s": 470.0914,
+    "prompt_tokens": 5145,
+    "runs": [
+      {
+        "ttft_s": 462.49093,
+        "decode_s": 6.50863,
+        "turn_s": 469.02511,
+        "prompt_tokens": 5145
+      },
+      {
+        "ttft_s": 463.48197999999996,
+        "decode_s": 6.5913900000000005,
+        "turn_s": 470.0914,
+        "prompt_tokens": 5145
+      },
+      {
+        "ttft_s": 464.28609,
+        "decode_s": 6.714600000000001,
+        "turn_s": 471.04228,
+        "prompt_tokens": 5145
+      }
+    ]
+  },
+  "fastpath": {
+    "ttft_s": 355.13471000000004,
+    "decode_s": 6.550800000000001,
+    "turn_s": 362.28042,
+    "prompt_tokens": 5145,
+    "runs": [
+      {
+        "ttft_s": 359.58028,
+        "decode_s": 6.5867700000000005,
+        "turn_s": 366.73127,
+        "prompt_tokens": 5145
+      },
+      {
+        "ttft_s": 354.03224,
+        "decode_s": 6.550800000000001,
+        "turn_s": 361.02301,
+        "prompt_tokens": 5145
+      },
+      {
+        "ttft_s": 355.13471000000004,
+        "decode_s": 6.52879,
+        "turn_s": 362.28042,
+        "prompt_tokens": 5145
+      }
+    ]
+  }
+}
